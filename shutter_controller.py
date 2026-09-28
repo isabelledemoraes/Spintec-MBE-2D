@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 
 STATE_FILE = "shutter_state.json"
 
@@ -36,7 +37,13 @@ def initialize_daq_outputs(device: str = "Dev1") -> None:
 
 
 class ShutterController:
+    """
+    Single shared instance (created by MainWindow) used by both the GUI buttons
+    and the script engine, so the General View always reflects the real state.
+    """
     def __init__(self):
+        # Guards self.state, the JSON file and DAQ writes (GUI + script threads).
+        self._lock = threading.Lock()
         self.state = self._load_state()
 
     def _load_state(self):
@@ -49,23 +56,30 @@ class ShutterController:
         with open(STATE_FILE, "w") as f:
             json.dump(self.state, f)
 
-    def set_shutter(self, loop_id, line_name, state: bool):
+    def set_shutter(self, loop_id, line_name, state: bool) -> bool:
+        """Write the shutter line. Returns True on success; state is only updated on success."""
+        with self._lock:
+            if nidaqmx is None:
+                print("[Shutter] NI-DAQ not available; simulated state only.")
+                self.state[loop_id] = state
+                self._save_state()
+                return True
 
-        if nidaqmx is None:
-            print("[Shutter] NI-DAQ not available; simulated state only.")
-            self.state[loop_id] = state
-            self._save_state()
-            return
+            try:
+                with nidaqmx.Task() as task:
+                    task.do_channels.add_do_chan(line_name, line_grouping=LineGrouping.CHAN_PER_LINE)
+                    task.write(state)
+                self.state[loop_id] = state
+                self._save_state()
+                print(f"[Shutter] {loop_id} → {line_name} = {'HIGH' if state else 'LOW'}")
+                return True
+            except Exception as e:
+                print(f"[Shutter] ERROR writing to {line_name}: {e}")
+                return False
 
-        try:
-            with nidaqmx.Task() as task:
-                task.do_channels.add_do_chan(line_name, line_grouping=LineGrouping.CHAN_PER_LINE)
-                task.write(state)
-            self.state[loop_id] = state
-            self._save_state()
-            print(f"[Shutter] {loop_id} → {line_name} = {'HIGH' if state else 'LOW'}")
-        except Exception as e:
-            print(f"[Shutter] ERROR writing to {line_name}: {e}")
+    def get_state(self, loop_id) -> bool:
+        with self._lock:
+            return bool(self.state.get(loop_id, False))
 
     def get_last_saved(self, loop_id) -> bool:
-        return self.state.get(loop_id, False)
+        return self.get_state(loop_id)
