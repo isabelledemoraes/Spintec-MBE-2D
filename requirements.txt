@@ -38,4 +38,6 @@ pandas>=2.0
 #    The Python binding is then installed separately:
 #      pip install nidaqmx
 #    If nidaqmx is absent the shutter controller silently simulates (safe to run).
-# nidaqmx  (uncomment after NI driver installation)
+#    Installing it without the NI driver is harmless: DAQ errors are caught and
+#    logged.
+nidaqmx

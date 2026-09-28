@@ -60,6 +60,26 @@ Open `addresses.py` in Notepad or any text editor and update the values:
 "shutter_line": "Dev1/port0/line2"   # "DevX/portY/lineZ"
 ```
 
+### Step 4 — Machine-specific settings
+
+Everything that differs between machines lives in `addresses.py`, so the
+code itself is identical on every PC. See `config/addresses.py.example`
+for details.
+
+| Setting | Where | Default |
+|---|---|---|
+| `SIMULATION = False` | top of the file | `True` (simulated instruments) |
+| `"command": "DS IG1 \r\n"` | `"Pressure"` entry | `DS IG1` |
+| `"script_direct_setpoint": True` | an Eurotherm loop | off |
+| `"script_keep_ramp_generator": True` | an Eurotherm loop | off |
+
+- **`script_direct_setpoint`** — in scripts, `temperature_ramp()` only writes
+  the setpoint, like the GUI **Set** button (mbe1: Se1, Se2 — mbe2:
+  Te-Cracker, Te-Tube).
+- **`script_keep_ramp_generator`** — in scripts, `temperature_ramp()` skips
+  the "ramp generator OFF" safety interlock and restores its previous state
+  afterwards (mbe2: Te-Res).
+
 ---
 
 ## How to Launch
@@ -79,8 +99,9 @@ python watchdog.py
 > offers to resume any script that was running at the time of the crash.
 
 **Simulation mode (no instruments needed):**
-Open `GUIv5.py` and set `SIMULATION = True` at the top.
-The GUI will run with simulated instrument data — useful for testing scripts offline.
+Set `SIMULATION = True` at the top of `addresses.py` (it is also the default
+when the line is missing). The window title then shows **[SIMULATION]** and
+the GUI runs with simulated instrument data — useful for testing scripts offline.
 
 ---
 
