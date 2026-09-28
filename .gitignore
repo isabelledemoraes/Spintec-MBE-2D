@@ -1,0 +1,33 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.log
+*.csv
+venv/
+.venv/
+
+# Real instrument addresses — NEVER commit (contains COM ports, device names)
+# Use config/addresses.py.example as the template
+addresses.py
+
+# Runtime state — machine-specific, regenerated on each run
+checkpoint.json
+shutter_state.json
+
+# Log and data output
+logs/
+data/
+
+# IDE
+.vscode/
+.idea/
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# PyInstaller
+dist/
+build/
+*.spec

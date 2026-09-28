@@ -1,0 +1,76 @@
+# Changelog
+
+All notable changes to MBE Control are documented here.
+
+Format: `[version] — date — description`
+
+---
+
+## [0.4.0] — 2026-02-20
+
+### Added
+- **Windows installer** (`install_windows.bat`) — one-click setup for fresh machines
+- **`requirements.txt`** — pinned package versions for reproducible installs
+- **`run.bat`** — simple Windows double-click launcher
+- **`config/addresses.py.example`** — template for instrument address configuration
+- **`README_INSTALL.md`** — non-technical installation and configuration guide
+- **`CHANGELOG.md`** and **`COMMIT_GUIDE.md`** — project documentation
+
+---
+
+## [0.3.0] — 2026-02-20
+
+### Added
+- **Sync Ramp Calculator tab** (`⏱ Sync Ramp`) — computes staggered `hold()` delays
+  so multiple evaporation cells all reach their target temperature at the same wall-clock time
+- **Target finish time input (HH:MM)** — user sets desired end time; delays are baked in
+  at script generation time with `hold(X)   # wait until HH:MM` comments
+- **Material profiles system** — JSON config file (`config/material_profiles.json`),
+  extensible without touching code
+- **Critical zone support for Au** — segmented ramp calculation (normal → slow → normal)
+  through the 1014–1114 °C zone around the Au melting point; other materials use simple linear calc
+- **Visual timeline preview** — QPainter Gantt chart; blue = normal ramp, orange = critical zone
+- **Script generator** — per-tab copy output with start-time comments
+- **`⚡ Min` button** — auto-sets target time to earliest possible finish
+
+### Fixed
+- `addresses.py` is the single source of truth for critical zone data (no duplication in JSON)
+
+---
+
+## [0.2.0] — 2026-02-19
+
+### Added
+- **Simulation mode** (`SIMULATION = True` in `GUIv5.py`) — runs the full GUI with
+  simulated Eurotherm and pressure gauge data; no serial hardware required
+- `SimEurothermController` — in-memory controller with `_tick()` drift logic
+- `SimPressureGaugeController` — returns a fixed simulated pressure
+- **Crash recovery system** — `watchdog.py` auto-restarts the app after a crash;
+  `checkpoint_manager.py` saves progress statement-by-statement so scripts resume where they left off
+- **Logs tab** — visualizes instrument log files directly in the GUI
+- **Script statement-by-statement execution** — scripts checkpoint before each statement,
+  enabling recovery after a mid-script crash
+
+### Fixed
+- Pressure panel moved to its own dedicated tab (was crammed into General View)
+- Pressure plot X-axis now shows wall-clock time (HH:MM:SS) using `DateAxisItem`
+- Live plot buffer changed from unbounded list to `deque(maxlen=3600)` — prevents memory freeze
+- Script window cannot be reopened after closing the last tab (auto-creates a new empty tab)
+- Temperature ramp preview now renders segmented ramp curves in the Check plot
+- Eurotherm layout wrapped in `QScrollArea` — scales correctly for 6+ controllers
+- `closeEvent` now stops all running script threads before exiting (previously scripts
+  continued running in the background after the window was closed)
+
+---
+
+## [0.1.0] — 2025-11-01
+
+### Added
+- Initial instrument control platform
+- Eurotherm temperature controller panels (auto / manual mode, live plots)
+- Pressure monitoring (Bayard-Alpert gauge via serial ASCII)
+- Shutter control (NI-DAQmx digital output, silently simulated if driver absent)
+- Script execution engine — sequential per-tab, parallel across tabs
+- Built-in script commands: `temperature_ramp()`, `power_ramp()`, `hold()`,
+  `open_shutter()`, `close_shutter()`, `wait_until_temperature()`
+- Follow-up plot after script completion (power or temperature trace)

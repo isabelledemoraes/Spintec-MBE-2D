@@ -1,0 +1,41 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# MBE Control — Python dependencies
+# Install with:  pip install -r requirements.txt
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── GUI framework ─────────────────────────────────────────────────────────────
+PyQt6==6.7.1
+PyQt6-Qt6==6.7.3
+PyQt6_sip==13.8.0
+
+# ── Scientific plotting (live instrument traces, preview plots) ───────────────
+pyqtgraph==0.13.7
+
+# ── Numerical computing ───────────────────────────────────────────────────────
+numpy==2.1.2
+
+# ── Serial / Modbus communication ─────────────────────────────────────────────
+#    pyserial    : RS-232 pressure gauge (COM10, 300 baud ASCII)
+#    minimalmodbus: Eurotherm temperature controllers (COM1, Modbus RTU 9600 baud)
+pyserial==3.5
+minimalmodbus==2.1.1
+
+# ── Live dashboard (visu_window.py — native desktop window) ──────────────────
+#    pywebview : renders the Plotly HTML in a native OS window (no browser/port)
+#    plotly    : builds interactive figures + bundles plotly.js offline
+#    pandas    : reads CSV log files
+pywebview>=4.4
+plotly>=5.18
+pandas>=2.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OPTIONAL / HARDWARE-SPECIFIC
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── NI-DAQmx (shutter digital I/O, NI DAQPad) ────────────────────────────────
+#    NOT available on PyPI — install the NI-DAQmx driver package from:
+#    https://www.ni.com/en/support/downloads/drivers/download.ni-daqmx.html
+#    The Python binding is then installed separately:
+#      pip install nidaqmx
+#    If nidaqmx is absent the shutter controller silently simulates (safe to run).
+# nidaqmx  (uncomment after NI driver installation)
