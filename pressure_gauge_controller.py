@@ -14,6 +14,8 @@ class PressureGaugeController(BaseInstrument):
         self.loop_id = loop_id
         self.port, _ = addresses[loop_id]["device"]
         self.baudrate = 300
+        # Gauge channel command, e.g. "DS IG1 \r\n"; optional in addresses.py
+        self.command = addresses[loop_id].get("command", "DS IG1 \r\n").encode("ascii")
         self.ser = None
         self.connected = False
 
@@ -51,7 +53,7 @@ class PressureGaugeController(BaseInstrument):
 
         try:
             with self.port_lock:
-                self.ser.write(b'DS IG2 \r\n')
+                self.ser.write(self.command)
                 raw = self.ser.read(50)
         except Exception as e:
             raise IOError(f"Serial read error: {e}")

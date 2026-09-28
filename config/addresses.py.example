@@ -153,7 +153,7 @@ addresses = {
     # ── Pressure gauge (serial ASCII, Bayard-Alpert style) ───────────────────
     "Pressure": {
         "device":   ("COM10", 300),     # ("COMx", baud_rate)  ← CHANGE COM PORT
-        "command":  "DS IG2 \r\n",      # ASCII command sent to gauge
+        "command":  "DS IG1 \r\n",      # ASCII command sent to gauge (optional, default IG1)
         "unit":     "Torr",
     },
 
