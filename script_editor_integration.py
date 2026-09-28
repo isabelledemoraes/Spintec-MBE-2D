@@ -17,6 +17,11 @@ import checkpoint_manager
 from addresses import addresses
 
 
+def _loop_flag(loop_id, key):
+    """Per-loop boolean option from addresses.py (False when absent)."""
+    return bool(addresses.get(loop_id, {}).get(key, False))
+
+
 # In script_editor_integration.py, at the top level
 
 # This dictionary will store an owner id for each loop_id that is currently in use.
@@ -256,9 +261,10 @@ class ScriptEditor(QWidget):
                     self.log_callback(f"[{loop_id}] WARNING: Requested rate capped at {MAX_TEMP_RATE}°C/min.")
                     normal_rate_min = MAX_TEMP_RATE
 
-                ctrl = get_controller(loop_id)    # Special case: Se1 and Se2 → behave like GUI "Set" button,
+                ctrl = get_controller(loop_id)    # Special case: loops with "script_direct_setpoint"
+                # in addresses.py behave like the GUI "Set" button,
                 # i.e. just write the setpoint, no ramp generator / OP changes.
-                if loop_id in ("Se1", "Se2"):
+                if _loop_flag(loop_id, "script_direct_setpoint"):
                     self.log_callback(
                         f"[{loop_id}] Using simple GUI-style temperature set: "
                         f"writing setpoint to {target_temp}°C (no ramp logic, no ramp/OP changes)."
@@ -275,11 +281,12 @@ class ScriptEditor(QWidget):
                 self.log_callback(f"[{loop_id}] Planning temperature ramp to {target_temp}°C.")
 
                 # ------------------------------------------------------------------
-                # EXCEPTION: For Se1 and Se2 we do NOT want to permanently disable
+                # EXCEPTION: For loops with "script_keep_ramp_generator" in
+                # addresses.py we do NOT want to permanently disable
                 # the OP ramp / ramp generator. We remember the initial ramp state
                 # and restore it at the end instead of forcing it OFF.
                 # ------------------------------------------------------------------
-                skip_ramp_safety = loop_id in ("Se1", "Se2")
+                skip_ramp_safety = _loop_flag(loop_id, "script_keep_ramp_generator")
 
                 try:
                     initial_ramp_status = ctrl.get_ramp_status(loop_id)  # "on" or "off"
@@ -287,7 +294,7 @@ class ScriptEditor(QWidget):
                     self.log_callback(f"[{loop_id}] WARNING: Could not read initial ramp status: {e}")
                     initial_ramp_status = None
 
-                # --- SAFETY INTERLOCK (only for loops OTHER than Se1/Se2) ---
+                # --- SAFETY INTERLOCK (skipped for "script_keep_ramp_generator" loops) ---
                 if not skip_ramp_safety:
                     try:
                         self.log_callback(f"[{loop_id}] Safety Interlock: Ensuring ramp generator is disabled.")
@@ -431,7 +438,8 @@ class ScriptEditor(QWidget):
                     # ------------------------------------------------------------------
                     # FINALIZATION:
                     #  - Normal loops: disable ramp generator (safety).
-                    #  - Se1/Se2: restore whatever the state was before the ramp.
+                    #  - "script_keep_ramp_generator" loops: restore whatever the state
+                    #    was before the ramp.
                     # ------------------------------------------------------------------
                     if skip_ramp_safety:
                         if initial_ramp_status is not None:
@@ -440,7 +448,7 @@ class ScriptEditor(QWidget):
                             ctrl.set_ramp_status(loop_id, initial_ramp_status == "on")
                         else:
                             self.log_callback(
-                                f"[{loop_id}] Finalizing sequence: Se source but no initial state → leaving ramp generator as-is.")
+                                f"[{loop_id}] Finalizing sequence: no initial ramp state → leaving ramp generator as-is.")
                     else:
                         self.log_callback(f"[{loop_id}] Finalizing sequence: Disabling ramp generator.")
                         ctrl.set_ramp_status(loop_id, False)
@@ -510,7 +518,7 @@ class ScriptEditor(QWidget):
             def wait_until_temperature(loop_id, target_temp, tolerance=0.5, timeout=None):
                 """
                 Wait until the PV temperature of loop_id reaches target_temp within tolerance.
-                - loop_id: instrument name ("Se1", "Se2", "Substrate", ...)
+                - loop_id: instrument name as in addresses.py ("Substrate", ...)
                 - target_temp: temperature to reach (°C)
                 - tolerance: acceptable difference (default ±0.5°C)
                 - timeout: max waiting time in seconds (None = no timeout)

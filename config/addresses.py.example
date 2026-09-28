@@ -25,6 +25,16 @@
 # If this line is missing, GUIv5.py falls back to True.
 SIMULATION = False
 
+# ── Optional per-loop script options (Eurotherm loops only, default False) ───
+#   "script_direct_setpoint": True
+#       temperature_ramp() in scripts just writes the setpoint, like the GUI
+#       "Set" button — no ramp generator / OP changes.
+#       (mbe1: Se1, Se2 — mbe2: Te-Cracker, Te-Tube)
+#   "script_keep_ramp_generator": True
+#       temperature_ramp() skips the "ramp generator OFF" safety interlock and
+#       restores the ramp generator to its previous state afterwards.
+#       (mbe2: Te-Res)
+
 addresses = {
     # ── Au (Gold) Eurotherm temperature controller ───────────────────────────
     # Serial port: COM1  (shared RS-485 Modbus bus), Modbus slave address: 1
