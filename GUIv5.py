@@ -28,11 +28,13 @@ USE_SHUTTER_HARDWARE = True
 USE_PRESSURE_GAUGE = True
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SIMULATION MODE — set to False on the instrument PC to use real hardware.
+# SIMULATION MODE — set per machine in addresses.py (SIMULATION = False on the
+# instrument PC). Defaults to True when addresses.py does not define it.
 # When True: fake Eurotherm + pressure data, no serial ports needed.
 # When False: real Eurotherm (COM1 Modbus) + pressure gauge (COM10) required.
 # ─────────────────────────────────────────────────────────────────────────────
-SIMULATION = True   # ← set False on instrument PC to use real hardware
+import addresses as _machine_config
+SIMULATION = getattr(_machine_config, "SIMULATION", True)
 
 if SIMULATION:
     from sim_controllers import SimEurothermController, SimPressureGaugeController
@@ -169,7 +171,7 @@ class InstrumentPanel(QFrame):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MBEControl-Se")
+        self.setWindowTitle("MBEControl-Se" + (" [SIMULATION]" if SIMULATION else ""))
         self.resize(1000, 800)
 
         self.log_timer = QTimer(self)

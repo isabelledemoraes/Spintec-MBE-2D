@@ -19,6 +19,12 @@
 #       Only this .example file (with placeholder values) is version-controlled.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Simulation mode ───────────────────────────────────────────────────────────
+# False on the instrument PC (real Eurotherm + pressure gauge).
+# True on a development laptop (simulated data, no serial ports needed).
+# If this line is missing, GUIv5.py falls back to True.
+SIMULATION = False
+
 addresses = {
     # ── Au (Gold) Eurotherm temperature controller ───────────────────────────
     # Serial port: COM1  (shared RS-485 Modbus bus), Modbus slave address: 1
