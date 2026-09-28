@@ -24,8 +24,8 @@ from script_editor_integration import ScriptManager
 import checkpoint_manager
 #from plot_tab import PlotTab
 
-USE_SHUTTER_HARDWARE = True
-USE_PRESSURE_GAUGE = True
+USE_SHUTTER_HARDWARE = False
+USE_PRESSURE_GAUGE = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIMULATION MODE — set per machine in addresses.py (SIMULATION = False on the
