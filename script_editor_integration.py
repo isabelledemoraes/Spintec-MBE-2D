@@ -12,9 +12,11 @@ import pyqtgraph as pg
 import numpy as np
 import os
 import ast
+from html import escape
 from collections import deque
 import checkpoint_manager
 from addresses import addresses
+from script_compiler import compile_script, Level
 
 
 def _loop_flag(loop_id, key):
@@ -113,11 +115,13 @@ class ScriptEditor(QWidget):
         self.editor = QPlainTextEdit()
         self.editor.setPlainText("""power_ramp(\"Au\", 60, 2)\nhold(1)\npower_ramp(\"Au\", 30, 1)""")
 
-        self.check_button = QPushButton("Check")
-        self.check_button.clicked.connect(self.check_script)
+        self.compile_button = QPushButton("Compile")
+        self.compile_button.clicked.connect(self.compile_current)
 
+        # Run is enabled only after a compilation with no errors of the current text.
         self.run_button = QPushButton("Run")
         self.run_button.clicked.connect(self.run_script)
+        self.run_button.setEnabled(False)
 
         self.stop_button = QPushButton("Stop")
         self.stop_button.clicked.connect(self.stop_script)
@@ -140,8 +144,16 @@ class ScriptEditor(QWidget):
         self._hw_label = QLabel("")
         self._hw_status.connect(self._hw_label.setText)
 
+        # Per-tab compilation state and report panel.
+        self._last_report = None      # CompileReport of the last compilation
+        self.report_view = QTextEdit()
+        self.report_view.setReadOnly(True)
+        self.report_view.setMaximumHeight(120)
+        self.report_view.setPlaceholderText("Not compiled. Click Compile to check the script.")
+        self.editor.textChanged.connect(self._on_text_changed)
+
         btn_layout = QHBoxLayout()
-        btn_layout.addWidget(self.check_button)
+        btn_layout.addWidget(self.compile_button)
         btn_layout.addWidget(self.run_button)
         btn_layout.addWidget(self.stop_button)
         btn_layout.addWidget(self.follow_up_btn)
@@ -152,12 +164,19 @@ class ScriptEditor(QWidget):
         layout.addWidget(QLabel(f"<b>{script_name}</b>"))
         layout.addLayout(btn_layout)
         layout.addWidget(self.editor)
+        layout.addWidget(self.report_view)
         layout.addWidget(self._hw_label)
         self.setLayout(layout)
 
     def run_script(self):
         if self.thread and self.thread.is_alive():
             self.log_callback(f"[{self.script_name}] Already running.")
+            return
+        if not self._is_compiled_ok():
+            self._update_run_enabled()
+            self.log_callback(
+                f"[{self.script_name}] Run refused: compile the script without errors first."
+            )
             return
 
         self.stop_event.clear()
@@ -177,8 +196,9 @@ class ScriptEditor(QWidget):
         except SyntaxError:
             self._stmt_ranges = []
 
-        # Lock the editor while the script is running.
+        # Lock the editor (and recompilation) while the script is running.
         self.editor.setReadOnly(True)
+        self.compile_button.setEnabled(False)
 
         owner_id = f"{self.script_name}"
 
@@ -814,6 +834,7 @@ class ScriptEditor(QWidget):
         default_fmt.setFontWeight(QFont.Weight.Normal)
         cursor.setCharFormat(default_fmt)
         self.editor.setReadOnly(False)
+        self.compile_button.setEnabled(True)
 
     def is_active(self) -> bool:
         """Return True while the runner thread is alive (running or waiting_for_hardware)."""
@@ -828,289 +849,49 @@ class ScriptEditor(QWidget):
         # ensure loops are freed even if the thread is stubborn
         _release_loops(self.script_name)
 
-    def check_script(self):
+    # ── Compilation ──────────────────────────────────────────────────────────
 
-        code = self.editor.toPlainText()
+    def compile_current(self):
+        """Run all compile checks on the current text and show the report."""
+        report = compile_script(self.editor.toPlainText(),
+                                controllers=self.shared_controllers)
+        self._last_report = report
+        self._show_report(report, outdated=False)
+        self._update_run_enabled()
+        self.log_callback(f"[{self.script_name}] {report.summary_line()}")
 
-        # 1. First, validate the script for syntax and semantic errors.
-        is_valid, errors = self._validate_script(code)
+    def _is_compiled_ok(self) -> bool:
+        """True when the last compilation has no errors and the text is unchanged since."""
+        return (self._last_report is not None
+                and self._last_report.ok
+                and self._last_report.code == self.editor.toPlainText())
 
-        if not is_valid:
-            self.log_callback(f"[{self.script_name}] Validation Failed. Please fix the following errors:")
-            for error in errors:
-                self.log_callback(error) # Log each error to the dialog
-            return # Stop here if validation fails
+    def _update_run_enabled(self):
+        self.run_button.setEnabled(self._is_compiled_ok())
 
-        # 2. If validation passes, proceed to generate the plot preview.
-        self.log_callback(f"[{self.script_name}] Script validation successful. Generating preview plot...")
-        recipe_data = []
-        temp_recipe_data = []
-        current_temps = {}   # loop_id → last known simulated temperature
+    def _on_text_changed(self):
+        # textChanged also fires on formatting (run highlight), so compare the
+        # text itself: only a real edit invalidates the compilation.
+        self._update_run_enabled()
+        if self._last_report is not None:
+            outdated = self._last_report.code != self.editor.toPlainText()
+            self._show_report(self._last_report, outdated)
 
-        try:
-            import re
-            match = re.search(r'power_ramp\(["\'](\w+)["\']', code)
-            loop_id = match.group(1) if match else None
-
-            if not loop_id:
-                current_power = 0.0
-            else:
-                ctrl = self.shared_controllers.get(loop_id)
-                if ctrl and ctrl.connected:
-                    current_power = ctrl.read_value(loop_id, "output_pv")
-                else:
-                    raise ConnectionError(f"No active controller for {loop_id}")
-
-        except Exception as e:
-            self.log_callback(f"[{self.script_name}] Could not get current power for preview, assuming 0. Error: {e}")
-            current_power = 0.0
-
-        def _current_preview_time():
-            """Return the latest time value across both preview datasets."""
-            t_p = recipe_data[-1][0] if recipe_data else 0.0
-            t_t = temp_recipe_data[-1][0] if temp_recipe_data else 0.0
-            return max(t_p, t_t)
-
-        def power_ramp(loop_id, target_power, duration_min):
-            last_time = _current_preview_time()
-            starting_power = recipe_data[-1][1] if recipe_data else current_power
-            steps = max(1, int(duration_min * 60))
-            rate = (target_power - starting_power) / steps
-            for t in range(steps):
-                power = starting_power + rate * t
-                recipe_data.append((last_time + t / 60, power))
-
-        def hold(duration_min):
-            last_time = _current_preview_time()
-            cur_p = recipe_data[-1][1] if recipe_data else current_power
-            cur_t = temp_recipe_data[-1][1] if temp_recipe_data else None
-            for t in range(int(duration_min * 60)):
-                recipe_data.append((last_time + t / 60, cur_p))
-                if cur_t is not None:
-                    temp_recipe_data.append((last_time + t / 60, cur_t))
-
-        def temperature_ramp(loop_id, target_temp, normal_rate_min):
-            rate = min(max(normal_rate_min, 0.1), 20.0)
-            start_temp = current_temps.get(loop_id, 25.0)
-            last_t = _current_preview_time()
-
-            # Build segments, honouring critical_zone if defined
-            cz = addresses.get(loop_id, {}).get("critical_zone")
-            segments = []   # list of (from_temp, to_temp, rate_°C_per_min)
-            plan_t = start_temp
-            going_up = target_temp > start_temp
-
-            if cz:
-                cz_lo, cz_hi = min(cz["range"]), max(cz["range"])
-                cz_rate = cz["slow_rate"]
-                if going_up:
-                    if plan_t < cz_lo and target_temp > cz_lo:
-                        segments.append((plan_t, cz_lo, rate))
-                        plan_t = cz_lo
-                    if plan_t < cz_hi and target_temp > cz_lo:
-                        end = min(cz_hi, target_temp)
-                        segments.append((plan_t, end, cz_rate))
-                        plan_t = end
-                else:
-                    if plan_t > cz_hi and target_temp < cz_hi:
-                        segments.append((plan_t, cz_hi, rate))
-                        plan_t = cz_hi
-                    if plan_t > cz_lo and target_temp < cz_hi:
-                        end = max(cz_lo, target_temp)
-                        segments.append((plan_t, end, cz_rate))
-                        plan_t = end
-
-            if plan_t != target_temp:
-                segments.append((plan_t, target_temp, rate))
-
-            t = last_t
-            for (seg_from, seg_to, seg_rate) in segments:
-                if seg_rate <= 0 or seg_from == seg_to:
-                    continue
-                dur = abs(seg_to - seg_from) / seg_rate   # minutes
-                steps = max(2, int(dur * 60))
-                for s in range(steps + 1):
-                    frac = s / steps
-                    temp_recipe_data.append(
-                        (t + frac * dur, seg_from + (seg_to - seg_from) * frac)
-                    )
-                t += dur
-
-            current_temps[loop_id] = target_temp
-
-        def open_shutter(shutter_id):
-            self.log_callback(
-                f"[{self.script_name}] Note: open_shutter('{shutter_id}') is ignored in preview."
-            )
-
-        def close_shutter(shutter_id):
-            self.log_callback(
-                f"[{self.script_name}] Note: close_shutter('{shutter_id}') is ignored in preview."
-            )
-
-        def wait_until_temperature(loop_id, target_temp, tolerance=0.5, timeout=None):
-            # In preview mode, treat this as an instant jump to the target temperature.
-            current_temps[loop_id] = target_temp
-
-        def wait_until(datetime_str: str):
-            pass  # no-op in preview
-
-        try:
-            exec(code, {}, {
-                "power_ramp": power_ramp,
-                "temperature_ramp": temperature_ramp,
-                "hold": hold,
-                "wait_until": wait_until,
-                "open_shutter": open_shutter,
-                "close_shutter": close_shutter,
-                "wait_until_temperature": wait_until_temperature,
-            })
-        except Exception as e:
-            self.log_callback(f"[{self.script_name}] Check failed during plot generation: {e}")
-            return
-
-        self.show_preview_plot(recipe_data, temp_data=temp_recipe_data or None)
-
-        # In script_editor_integration.py, inside the ScriptEditor class
-
-    def _validate_script(self, code: str) -> (bool, list):
-        """
-        Parses the script using AST to check for errors without executing it.
-        Returns a tuple: (is_valid, list_of_errors).
-        """
-        allowed_functions = {
-            "power_ramp":            {"min_args": 3, "max_args": 3},
-            "temperature_ramp":      {"min_args": 3, "max_args": 3},
-            "hold":                  {"min_args": 1, "max_args": 1},
-            "wait_until":            {"min_args": 1, "max_args": 1},
-            "open_shutter":          {"min_args": 1, "max_args": 1},
-            "close_shutter":         {"min_args": 1, "max_args": 1},
-            "wait_until_temperature":{"min_args": 2, "max_args": 4},
-        }
-        errors = []
-
-        try:
-            tree = ast.parse(code)
-        except SyntaxError as e:
-            return False, [f"Syntax Error on line {e.lineno}: {e.msg}"]
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                func_name = getattr(node.func, 'id', 'N/A')
-
-                if func_name not in allowed_functions:
-                    errors.append(f"Error on line {node.lineno}: Function '{func_name}' is not allowed.")
-                    continue
-
-                min_args = allowed_functions[func_name]["min_args"]
-                max_args = allowed_functions[func_name]["max_args"]
-                n_args   = len(node.args)
-                if not (min_args <= n_args <= max_args):
-                    if min_args == max_args:
-                        errors.append(
-                            f"Error on line {node.lineno}: '{func_name}' expected {min_args} "
-                            f"argument(s), but got {n_args}."
-                        )
-                    else:
-                        errors.append(
-                            f"Error on line {node.lineno}: '{func_name}' expected {min_args}–{max_args} "
-                            f"argument(s), but got {n_args}."
-                        )
-                    continue
-
-                try:
-                    if func_name in ["power_ramp", "temperature_ramp"]:
-                        # Arg 1: loop_id (string, must exist in addresses AND be a loop with temperature_pv)
-                        arg1 = node.args[0]
-                        if not isinstance(arg1, ast.Constant) or not isinstance(arg1.value, str):
-                            errors.append(
-                                f"Error on line {node.lineno}: First argument of '{func_name}' must be a string "
-                                f'(e.g., "Au").'
-                            )
-                        elif arg1.value not in addresses or "temperature_pv" not in addresses[arg1.value]:
-                            errors.append(
-                                f"Error on line {node.lineno}: Loop ID '{arg1.value}' not found as a Eurotherm loop "
-                                f"in addresses.py."
-                            )
-
-                        # Args 2 & 3: must be numbers
-                        for i in [1, 2]:
-                            arg = node.args[i]
-                            arg_num = i + 1  # Human-readable argument number (2nd, 3rd)
-                            if not isinstance(arg, ast.Constant) or not isinstance(arg.value, (int, float)):
-                                errors.append(
-                                    f"Error on line {node.lineno}: Argument {arg_num} of '{func_name}' must be a number."
-                                )
-
-                    if func_name == "hold":
-                        # Arg 1: duration (number)
-                        arg1 = node.args[0]
-                        if not isinstance(arg1, ast.Constant) or not isinstance(arg1.value, (int, float)):
-                            errors.append(
-                                f"Error on line {node.lineno}: Argument of 'hold' must be a number."
-                            )
-
-                    if func_name == "wait_until":
-                        arg1 = node.args[0]
-                        if not isinstance(arg1, ast.Constant) or not isinstance(arg1.value, str):
-                            errors.append(
-                                f"Error on line {node.lineno}: Argument of 'wait_until' must be a string "
-                                f'(e.g., "2026-06-10 08:30").'
-                            )
-                        else:
-                            try:
-                                from datetime import datetime as _dt
-                                _dt.strptime(arg1.value, "%Y-%m-%d %H:%M")
-                            except ValueError:
-                                errors.append(
-                                    f"Error on line {node.lineno}: 'wait_until' date '{arg1.value}' "
-                                    f"is not in YYYY-MM-DD HH:MM format."
-                                )
-
-                    if func_name == "wait_until_temperature":
-                        # Arg 1: loop_id (string)
-                        arg1 = node.args[0]
-                        if not isinstance(arg1, ast.Constant) or not isinstance(arg1.value, str):
-                            errors.append(
-                                f"Error on line {node.lineno}: First argument of 'wait_until_temperature' "
-                                f'must be a string (e.g., "Au").'
-                            )
-                        elif arg1.value not in addresses or "temperature_pv" not in addresses[arg1.value]:
-                            errors.append(
-                                f"Error on line {node.lineno}: Loop ID '{arg1.value}' not found in addresses.py."
-                            )
-                        # Arg 2: target_temp (number)
-                        if len(node.args) >= 2:
-                            arg2 = node.args[1]
-                            if not isinstance(arg2, ast.Constant) or not isinstance(arg2.value, (int, float)):
-                                errors.append(
-                                    f"Error on line {node.lineno}: Second argument of 'wait_until_temperature' "
-                                    f"must be a number."
-                                )
-
-                    if func_name in ["open_shutter", "close_shutter"]:
-                        # Arg 1: shutter ID (string, must exist and have shutter_line)
-                        arg1 = node.args[0]
-                        if not isinstance(arg1, ast.Constant) or not isinstance(arg1.value, str):
-                            errors.append(
-                                f"Error on line {node.lineno}: Argument of '{func_name}' must be a string "
-                                f'(e.g., "eGun1").'
-                            )
-                        else:
-                            shutter_id = arg1.value
-                            info = addresses.get(shutter_id)
-                            if not info or "shutter_line" not in info:
-                                errors.append(
-                                    f"Error on line {node.lineno}: Shutter ID '{shutter_id}' not found with "
-                                    f"'shutter_line' in addresses.py."
-                                )
-                except Exception:
-                    errors.append(
-                        f"Error on line {node.lineno}: Could not validate arguments for '{func_name}'."
-                    )
-
-        return not errors, errors
-
+    def _show_report(self, report, outdated: bool):
+        colors = {Level.ERROR: "#c00000", Level.WARNING: "#c05a00"}
+        html = []
+        if outdated:
+            html.append("<b>⚠ Report outdated: script modified since last compilation. "
+                        "Recompile to enable Run.</b>")
+        html.append(f"<i>Compiled at {report.compiled_at.strftime('%H:%M:%S')}</i>")
+        for m in report.messages:
+            color = "#808080" if outdated else colors[m.level]
+            html.append(f'<span style="color:{color}">{escape(m.format())}</span>')
+        color = "#808080" if outdated else ("#1a7a1a" if report.ok else "#c00000")
+        html.append(f'<b style="color:{color}">{escape(report.summary_line())}</b>')
+        for label, value in report.summary.items():
+            html.append(escape(f"{label}: {value}"))
+        self.report_view.setHtml("<br>".join(html))
 
     def save_script(self):
         os.makedirs("scripts", exist_ok=True)
@@ -1138,42 +919,6 @@ class ScriptEditor(QWidget):
                 self.editor.setPlainText(content)
                 self.editor.setFocus()
                 self.log_callback(f"[{self.script_name}] Script loaded from {filepath}")
-
-    def show_preview_plot(self, recipe_data, temp_data=None):
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Ramp Preview")
-        layout = QVBoxLayout()
-
-        if recipe_data:
-            from PyQt6.QtWidgets import QLabel as _QLabel
-            layout.addWidget(_QLabel("<b>Power Ramp</b>"))
-            pw = pg.PlotWidget()
-            pw.setLabel('left', 'Power (%)')
-            pw.setLabel('bottom', 'Time (min)')
-            pw.showGrid(x=True, y=True)
-            x, y = zip(*recipe_data)
-            pw.plot(x, y, pen='b')
-            layout.addWidget(pw)
-
-        if temp_data:
-            from PyQt6.QtWidgets import QLabel as _QLabel
-            layout.addWidget(_QLabel("<b>Temperature Ramp</b>"))
-            pt = pg.PlotWidget()
-            pt.setLabel('left', 'Temperature (°C)')
-            pt.setLabel('bottom', 'Time (min)')
-            pt.showGrid(x=True, y=True)
-            x, y = zip(*temp_data)
-            pt.plot(x, y, pen='r')
-            layout.addWidget(pt)
-
-        if not recipe_data and not temp_data:
-            from PyQt6.QtWidgets import QLabel as _QLabel
-            layout.addWidget(_QLabel("No ramp data to preview."))
-
-        dialog.setLayout(layout)
-        both = bool(recipe_data) and bool(temp_data)
-        dialog.resize(600, 700 if both else 420)
-        dialog.exec()
 
     def show_live_plot(self):
         if not self.live_plot_data:
