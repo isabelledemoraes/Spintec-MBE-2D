@@ -109,6 +109,17 @@ sources (#10) go in `DURATION_SOURCES` (only consulted for unknown steps). After
 clock times are minimums (`≥`). A new ramp on a loop whose previous ramp may still be running has an
 unknown end (runtime replaces the ramp; old `_continue_segments` thread can still override it — open).
 
+**Pressure interlock** (#8): `pressure_interlock.py`. A shutter entry with
+`"pressure_interlock": {"max_pressure_mbar": 1.0e-8}` (Liquid_N2) opens only if a fresh gauge read is
+strictly below the limit. The check is in `ShutterController.set_shutter` (matched by NI-DAQ **line**, so
+aliases are covered), so scripts AND manual buttons pass through it; refusal raises `InterlockError`
+(nothing written). Any doubt blocks: no/disconnected gauge, read error, non-finite/≤0 value,
+`addresses["Pressure"]["unit"] != "mbar"`, bad limit. In a script: stop at that line, `stop_event` set
+(stops ramp segments), checkpoint cleared, message box. Compile: `Level.INFO` line per opening
+(ERROR on bad config). `read_value` flushes the serial input first (no stale reply).
+Bypass: `"bypass": True` in the same dict (only literal `True`) opens with no pressure check —
+Compile WARNING per opening, startup log line, console warning at each bypassed opening.
+
 **Tab close protection**: `ScriptManager.close_tab` silently blocks if `editor.is_active()`.
 
 ## GUI structure
@@ -165,6 +176,8 @@ QThread → EurothermWorker.run() → data_ready signal
   refreshes shutter state every 1 s; shutters used by a running script are reserved in
   `active_shutter_locks` (separate from loop locks) and only those buttons are disabled; a failed
   shutter write stops the script ✅ — tested in simulation, not yet on real NI-DAQ
+- Pressure interlock (#8) ✅ in simulation — before real use: set the IG1 controller to mbar and
+  `"unit": "mbar"` + `pressure_interlock` in each machine's `addresses.py`; not yet tested on real gauge
 - Pressure gauge: simulated OK; real COM10 not yet tested end-to-end
 - `gui_main.py` uses a relative import `.GUIv5` — will fail if run directly; use `watchdog.py`
 

@@ -185,12 +185,16 @@ addresses = {
     "Pressure": {
         "device":   ("COM10", 300),     # ("COMx", baud_rate)  ← CHANGE COM PORT
         "command":  "DS IG1 \r\n",      # ASCII command sent to gauge (optional, default IG1)
-        "unit":     "Torr",
+        "unit":     "mbar",             # must match the gauge setting; the interlock requires "mbar"
     },
 
     # ── Additional shutter lines (NI-DAQmx digital output) ───────────────────
     "Liquid_N2": {
-        "shutter_line": "Dev1/port0/line7"   # ← CHANGE
+        "shutter_line": "Dev1/port0/line7",  # ← CHANGE
+        # Pressure interlock (issue #8): opens only if the gauge reads strictly
+        # below this value, checked just before each opening (script or button).
+        # "bypass": True opens WITHOUT any pressure check (maintenance only).
+        "pressure_interlock": {"max_pressure_mbar": 1.0e-8, "bypass": False},
     },
     "eGun1": {
         "shutter_line": "Dev1/port1/line0"   # ← CHANGE

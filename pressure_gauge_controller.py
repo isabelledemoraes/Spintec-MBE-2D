@@ -53,6 +53,9 @@ class PressureGaugeController(BaseInstrument):
 
         try:
             with self.port_lock:
+                # Drop any late reply to an earlier command so it cannot be
+                # returned as the current (stale) value.
+                self.ser.reset_input_buffer()
                 self.ser.write(self.command)
                 raw = self.ser.read(50)
         except Exception as e:
