@@ -18,11 +18,32 @@ ADDR = {
     "NoLim": {"temperature_pv": (1, 1), "limits": {"max_temp": None}},
     "NoMin": {"temperature_pv": (1, 1), "limits": {"power_ramp_allowed": True}},
     "eGun1": {"shutter_line": "Dev1/port1/line0"},
+    "Ga":    {"temperature_pv": (1, 1),
+              "limits": {"max_temp_rate": 15, "max_temp": 1100, "power_ramp_allowed": True,
+                         "min_power_rate": 0.01},
+              "critical_zone": {"range": (800, 750), "slow_rate": 2.0}},
+    "Se1":   {"temperature_pv": (1, 1), "script_direct_setpoint": True,
+              "limits": {"max_temp_rate": 15, "max_temp": 1100},
+              "critical_zone": {"range": (750, 800), "slow_rate": 2.0}},
 }
 
 
-def compile_(code):
-    return compile_script(code, addresses=ADDR)
+class FakeController:
+    """Only what the compiler reads: temperature_pv of each loop."""
+    def __init__(self, temps):
+        self.temps = temps
+
+    def read_value(self, loop_id, name):
+        return self.temps[loop_id]
+
+
+def compile_(code, temps=None):
+    controllers = {loop_id: FakeController(temps) for loop_id in (temps or {})}
+    return compile_script(code, addresses=ADDR, controllers=controllers)
+
+
+def warning_texts(code, temps=None):
+    return [m.format() for m in compile_(code, temps).warnings]
 
 
 def error_texts(code):
@@ -124,6 +145,72 @@ class TestCompile(unittest.TestCase):
         # Wrong types / unknown loops are reported once, by check_commands.
         r = compile_('temperature_ramp("Au", "hot", "fast")\npower_ramp("Xx", 30, 0.001)')
         self.assertEqual([m.line for m in r.errors], [1, 1, 2])
+
+    # ── Critical zones (#6) ───────────────────────────────────────────────────
+    def test_ramp_crossing_critical_zone(self):
+        r = compile_('temperature_ramp("Ga", 900, 5)', temps={"Ga": 600})
+        self.assertTrue(r.ok, r.format_lines())
+        self.assertEqual([m.format() for m in r.warnings],
+                         ["WARNING line 1: Ga ramp 600 -> 900 °C crosses critical zone "
+                          "750-800 °C, ramp slowed to 2 °C/min in this zone"])
+
+    def test_ramp_down_and_partial_crossings(self):
+        self.assertEqual(warning_texts(
+            'temperature_ramp("Ga", 700, 5)\n'    # 900 -> 700: down through the zone
+            'temperature_ramp("Ga", 770, 5)\n'    # ends inside
+            'temperature_ramp("Ga", 790, 1)',     # starts inside, rate below slow_rate
+            temps={"Ga": 900}),
+            ["WARNING line 1: Ga ramp 900 -> 700 °C crosses critical zone 750-800 °C, "
+             "ramp slowed to 2 °C/min in this zone",
+             "WARNING line 2: Ga ramp 700 -> 770 °C crosses critical zone 750-800 °C, "
+             "ramp slowed to 2 °C/min in this zone",
+             "WARNING line 3: Ga ramp 770 -> 790 °C crosses critical zone 750-800 °C, "
+             "ramp slowed to 1 °C/min in this zone"])
+
+    def test_ramp_outside_critical_zone(self):
+        self.assertEqual(warning_texts(
+            'temperature_ramp("Ga", 750, 5)\n'    # stops at the zone edge
+            'temperature_ramp("Ga", 300, 5)\n'
+            'temperature_ramp("Au", 900, 5)',     # no critical zone
+            temps={"Ga": 600, "Au": 20}), [])
+
+    def test_start_follows_previous_target(self):
+        self.assertEqual(warning_texts(
+            'temperature_ramp("Ga", 700, 5)\n'
+            'wait_until_temperature("Ga", 850)\n'
+            'temperature_ramp("Ga", 900, 5)\n'    # 850 -> 900: above the zone
+            'temperature_ramp("Ga", 600, 5)',
+            temps={"Ga": 20}),
+            ["WARNING line 4: Ga ramp 900 -> 600 °C crosses critical zone 750-800 °C, "
+             "ramp slowed to 2 °C/min in this zone"])
+
+    def test_unknown_start_temperature(self):
+        unknown = ("Ga start temperature unknown; ramp to 300 °C may cross critical zone "
+                   "750-800 °C, ramp slowed to 2 °C/min in this zone")
+        self.assertEqual(warning_texts('temperature_ramp("Ga", 300, 5)'),   # no controller
+                         [f"WARNING line 1: {unknown}"])
+        self.assertEqual(warning_texts(
+            'temperature_ramp("Ga", 400, 5)\n'
+            'power_ramp("Ga", 30, 0.5)\n'         # temperature no longer predictable
+            'temperature_ramp("Ga", 300, 5)',
+            temps={"Ga": 20}),
+            [f"WARNING line 3: {unknown}"])
+
+    def test_direct_setpoint_loop_has_no_zone_warning(self):
+        self.assertEqual(warning_texts('temperature_ramp("Se1", 900, 5)', temps={"Se1": 600}), [])
+
+    def test_temperature_timeline(self):
+        ctx = script_compiler.CompileContext(
+            code="", addresses=ADDR, controllers={"Ga": FakeController({"Ga": 600})},
+            tree=script_compiler.ast.parse('temperature_ramp("Ga", 900, 5)\nhold(1)\n'
+                                           'wait_until_temperature("Ga", 850)'))
+        steps = script_compiler.temperature_timeline(ctx)
+        self.assertIs(steps, script_compiler.temperature_timeline(ctx))  # cached
+        self.assertEqual([(s.line, s.command, s.start, s.target) for s in steps],
+                         [(1, "temperature_ramp", 600, 900),
+                          (3, "wait_until_temperature", 900, 850)])
+        self.assertEqual([(g.start, g.target, g.rate) for g in steps[0].segments],
+                         [(600, 750, 5), (750, 800, 2.0), (800, 900, 5)])
 
     def test_order_summary_and_warning_only(self):
         def warn(ctx):
