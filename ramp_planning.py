@@ -58,3 +58,22 @@ def plan_ramp_segments(start: float, target: float, rate: float,
     if plan_temp != target:
         add(target, rate, False)
     return segments
+
+
+def time_to_reach(segments: list[Segment], temp: float,
+                  tolerance: float = 0.0) -> float | None:
+    """
+    Minutes from the start of the ramp until its temperature first comes within
+    ±tolerance of `temp` (0 if it starts there). None if the ramp never gets there.
+    `segments` must be non-empty (a result of plan_ramp_segments).
+    """
+    low, high = temp - tolerance, temp + tolerance
+    elapsed = 0.0
+    for seg in segments:
+        if low <= seg.start <= high:
+            return elapsed
+        edge = low if seg.start < low else high   # band edge met first from seg.start
+        if min(seg.start, seg.target) <= edge <= max(seg.start, seg.target):
+            return elapsed + abs(edge - seg.start) / seg.rate
+        elapsed += seg.duration_min
+    return None

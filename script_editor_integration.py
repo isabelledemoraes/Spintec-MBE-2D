@@ -149,7 +149,7 @@ class ScriptEditor(QWidget):
         self._last_report = None      # CompileReport of the last compilation
         self.report_view = QTextEdit()
         self.report_view.setReadOnly(True)
-        self.report_view.setMaximumHeight(120)
+        self.report_view.setMaximumHeight(200)
         self.report_view.setPlaceholderText("Not compiled. Click Compile to check the script.")
         self.editor.textChanged.connect(self._on_text_changed)
 
@@ -860,6 +860,13 @@ class ScriptEditor(QWidget):
         html.append(f'<b style="color:{color}">{escape(report.summary_line())}</b>')
         for label, value in report.summary.items():
             html.append(escape(f"{label}: {value}"))
+        if report.timing is not None:
+            timing = [escape(line) for line in report.timing.format_lines()]
+            timing[0] = f"<b>{timing[0]}</b>"
+            timing[-1] = f"<b>{timing[-1]}</b>"
+            if outdated:
+                timing = [f'<span style="color:#808080">{t}</span>' for t in timing]
+            html.extend(timing)
         self.report_view.setHtml("<br>".join(html))
 
     def save_script(self):

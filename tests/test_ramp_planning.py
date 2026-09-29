@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from ramp_planning import plan_ramp_segments
+from ramp_planning import plan_ramp_segments, time_to_reach
 
 CZ = {"range": (1014, 1114), "slow_rate": 3.0}
 
@@ -43,6 +43,29 @@ class TestPlanRampSegments(unittest.TestCase):
     def test_duration(self):
         segs = plan_ramp_segments(900, 1200, 10, CZ)
         self.assertAlmostEqual(sum(s.duration_min for s in segs), 11.4 + 100 / 3 + 8.6)
+
+
+class TestTimeToReach(unittest.TestCase):
+    def test_single_segment(self):
+        segs = plan_ramp_segments(20, 500, 10, None)
+        self.assertAlmostEqual(time_to_reach(segs, 320), 30)
+        self.assertAlmostEqual(time_to_reach(segs, 500), 48)
+        self.assertAlmostEqual(time_to_reach(segs, 320, tolerance=5), 29.5)
+
+    def test_through_critical_zone(self):
+        up = plan_ramp_segments(900, 1200, 10, CZ)     # 11.4 min, then 100 °C at 3 °C/min
+        self.assertAlmostEqual(time_to_reach(up, 1064), 11.4 + 50 / 3)
+        self.assertAlmostEqual(time_to_reach(up, 1150), 11.4 + 100 / 3 + 3.6)
+        down = plan_ramp_segments(1200, 900, 10, CZ)   # 8.6 min, then zone, then 11.4 min
+        self.assertAlmostEqual(time_to_reach(down, 1064), 8.6 + 50 / 3)
+        self.assertAlmostEqual(time_to_reach(down, 950, tolerance=1), 8.6 + 100 / 3 + 6.3)
+
+    def test_already_there_or_never(self):
+        segs = plan_ramp_segments(20, 500, 10, None)
+        self.assertEqual(time_to_reach(segs, 20.3, tolerance=0.5), 0)
+        self.assertIsNone(time_to_reach(segs, 600))
+        self.assertIsNone(time_to_reach(segs, 10))
+        self.assertAlmostEqual(time_to_reach(segs, 500.4, tolerance=0.5), 47.99)
 
 
 if __name__ == "__main__":

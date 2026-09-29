@@ -99,6 +99,16 @@ temperature command by command (start = live `temperature_pv` via `ctx.controlle
 target; `power_ramp` or no controller → unknown) and is cached on `ctx.timeline` for reuse by #7.
 `check_critical_zones` emits a WARNING per ramp slowed by a zone ("may cross" when start unknown).
 
+**Time estimate** (#7): `script_compiler.time_timeline(ctx)` → `ScriptTiming` (cached on `ctx.timing`,
+attached to `CompileReport.timing` only when there are no errors). Clock starts at compile time
+(`compile_script(now=...)` for tests). Ramps take 0 s and run in the background in parallel;
+only `hold`, `wait_until`, `wait_until_temperature` advance the clock (`ramp_planning.time_to_reach`
+for the latter; `timeout` in seconds bounds it). `power_ramp` end = |target − live `output_pv`| / rate.
+Each step has a `Duration(minutes, source, note)`; source is `"calculated"` or `"unknown"`; other
+sources (#10) go in `DURATION_SOURCES` (only consulted for unknown steps). After an unknown step,
+clock times are minimums (`≥`). A new ramp on a loop whose previous ramp may still be running has an
+unknown end (runtime replaces the ramp; old `_continue_segments` thread can still override it — open).
+
 **Tab close protection**: `ScriptManager.close_tab` silently blocks if `editor.is_active()`.
 
 ## GUI structure
@@ -145,6 +155,9 @@ QThread → EurothermWorker.run() → data_ready signal
   now a rate in %/s ✅ — real `max_temp`/`min_temp` values still to be set in each machine's `addresses.py`
 - Critical zone warnings (#6): shared `ramp_planning.py` + `temperature_timeline` + `check_critical_zones` ✅;
   runtime zone rate is now `min(rate, slow_rate)` — not yet tested on real hardware
+- Time estimate (#7): per-line durations, total, script end + last ramp end in the Compile report ✅;
+  report panel height raised to 200 px. Open: same-loop ramp replacement at runtime (stale
+  `_continue_segments` thread and `_hw_wait_items` entry of the replaced ramp)
 - Completion blocking (block script until all ramp segments physically done): IN PROGRESS
 - `wait_until("YYYY-MM-DD HH:MM")` DSL function: blocks script until target datetime, with countdown status label and stop-event support ✅
 - NI DAQ USB-6501 output init: `initialize_daq_outputs()` added to `shutter_controller.py`, called first in `GUIv5.py __main__` — sets all 24 lines LOW before any task is created ✅
