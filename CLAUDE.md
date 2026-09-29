@@ -92,6 +92,13 @@ come from `CELL_LIMITS` / `SUBSTRATE_LIMITS` / `EUROTHERM_LIMITS`, see `config/a
 A limit missing or `None` for a loop used by the script is an ERROR. `temperature_ramp` rate must be
 > 0. Targets of `temperature_ramp` and `wait_until_temperature` are checked against `min/max_temp`.
 
+**Critical zones** (#6): `ramp_planning.plan_ramp_segments(start, target, rate, critical_zone)` is the
+single segment planner, used by the runtime `temperature_ramp` and by the compiler. Inside the zone the
+rate is `min(rate, slow_rate)`. `script_compiler.temperature_timeline(ctx)` simulates each loop's
+temperature command by command (start = live `temperature_pv` via `ctx.controllers`, then previous
+target; `power_ramp` or no controller → unknown) and is cached on `ctx.timeline` for reuse by #7.
+`check_critical_zones` emits a WARNING per ramp slowed by a zone ("may cross" when start unknown).
+
 **Tab close protection**: `ScriptManager.close_tab` silently blocks if `editor.is_active()`.
 
 ## GUI structure
@@ -136,6 +143,8 @@ QThread → EurothermWorker.run() → data_ready signal
 - Compile framework (#4): Check + preview graph removed, Compile + per-tab report added ✅; next: #6–#9 plug into `CHECKS`
 - Ramp limit checks (#5): `check_ramp_rates` + `check_temperature_targets`; `power_ramp` 3rd arg is
   now a rate in %/s ✅ — real `max_temp`/`min_temp` values still to be set in each machine's `addresses.py`
+- Critical zone warnings (#6): shared `ramp_planning.py` + `temperature_timeline` + `check_critical_zones` ✅;
+  runtime zone rate is now `min(rate, slow_rate)` — not yet tested on real hardware
 - Completion blocking (block script until all ramp segments physically done): IN PROGRESS
 - `wait_until("YYYY-MM-DD HH:MM")` DSL function: blocks script until target datetime, with countdown status label and stop-event support ✅
 - NI DAQ USB-6501 output init: `initialize_daq_outputs()` added to `shutter_controller.py`, called first in `GUIv5.py __main__` — sets all 24 lines LOW before any task is created ✅

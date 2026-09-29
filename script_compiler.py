@@ -17,6 +17,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Callable, Iterator
 
+from ramp_planning import Segment, plan_ramp_segments
+
 
 class Level(Enum):
     ERROR = "ERROR"      # blocks Run
@@ -41,6 +43,7 @@ class CompileContext:
     addresses: dict
     controllers: dict = field(default_factory=dict)  # live hardware, for checks that need it
     summary: dict = field(default_factory=dict)      # label -> value, shown under the summary line
+    timeline: list | None = None                     # cache of temperature_timeline(ctx)
 
 
 @dataclass
@@ -416,6 +419,100 @@ def check_temperature_targets(ctx: CompileContext) -> list[CompileMessage]:
     return errors
 
 
+# ── Temperature tracking (#6, reused by the time estimate #7) ─────────────────
+
+@dataclass
+class TemperatureStep:
+    line: int
+    command: str                # "temperature_ramp" or "wait_until_temperature"
+    loop_id: str
+    start: float | None         # estimated temperature before the command; None = unknown
+    target: float
+    rate: float | None = None   # temperature_ramp only (°C/min)
+    segments: list[Segment] = field(default_factory=list)  # empty if start unknown / no ramp
+
+
+def _read_current_temp(ctx: CompileContext, loop_id: str):
+    ctrl = ctx.controllers.get(loop_id)
+    if ctrl is None:
+        return None
+    try:
+        return float(ctrl.read_value(loop_id, "temperature_pv"))
+    except Exception:
+        return None
+
+
+def temperature_timeline(ctx: CompileContext) -> list[TemperatureStep]:
+    """
+    Simulate the temperature of each loop command by command. A loop starts at its
+    live temperature_pv (unknown without controller), then follows the targets of
+    temperature_ramp / wait_until_temperature. power_ramp makes it unknown.
+    Computed once per compilation and cached on ctx.
+    """
+    if ctx.timeline is not None:
+        return ctx.timeline
+
+    temps = {}   # loop_id -> estimated temperature (None = unknown)
+    steps = []
+    for line, name, node in iter_calls(ctx.tree):
+        if name not in ("temperature_ramp", "wait_until_temperature", "power_ramp"):
+            continue
+        passed = _bound_args(node)
+        loop_id = _loop_arg(passed, ctx.addresses)
+        if loop_id is None:
+            continue
+        if loop_id not in temps:
+            temps[loop_id] = _read_current_temp(ctx, loop_id)
+        if name == "power_ramp":
+            temps[loop_id] = None
+            continue
+
+        target = _number_arg(passed, "target_temp")
+        if target is None:
+            temps[loop_id] = None
+            continue
+        step = TemperatureStep(line, name, loop_id, temps[loop_id], target)
+        if name == "temperature_ramp":
+            step.rate = _number_arg(passed, "normal_rate_min")
+            info = ctx.addresses[loop_id]
+            # script_direct_setpoint loops only write the setpoint: no ramp segments.
+            if (step.start is not None and step.rate is not None and step.rate > 0
+                    and not info.get("script_direct_setpoint", False)):
+                step.segments = plan_ramp_segments(step.start, target, step.rate,
+                                                   info.get("critical_zone"))
+        steps.append(step)
+        temps[loop_id] = target
+
+    ctx.timeline = steps
+    return steps
+
+
+def check_critical_zones(ctx: CompileContext) -> list[CompileMessage]:
+    """WARNING for each temperature_ramp slowed down by the critical zone of its loop."""
+    warnings = []
+    for step in temperature_timeline(ctx):
+        if step.command != "temperature_ramp" or step.rate is None or step.rate <= 0:
+            continue
+        info = ctx.addresses[step.loop_id]
+        cz = info.get("critical_zone")
+        if not cz or info.get("script_direct_setpoint", False):
+            continue
+        cz_start, cz_end = min(cz["range"]), max(cz["range"])
+        zone = f"critical zone {cz_start:g}-{cz_end:g} °C"
+        slowed = f"ramp slowed to {min(step.rate, cz['slow_rate']):g} °C/min in this zone"
+        if step.start is None:
+            warnings.append(CompileMessage(
+                Level.WARNING, step.line,
+                f"{step.loop_id} start temperature unknown; ramp to {step.target:g} °C "
+                f"may cross {zone}, {slowed}"))
+        elif any(seg.in_critical_zone for seg in step.segments):
+            warnings.append(CompileMessage(
+                Level.WARNING, step.line,
+                f"{step.loop_id} ramp {round(step.start, 1):g} -> {step.target:g} °C "
+                f"crosses {zone}, {slowed}"))
+    return warnings
+
+
 # Registry: every check runs on each compilation. Append new checks here.
 CHECKS: list[Check] = [
     check_statements,
@@ -423,6 +520,7 @@ CHECKS: list[Check] = [
     check_call_arguments,
     check_ramp_rates,
     check_temperature_targets,
+    check_critical_zones,
 ]
 
 

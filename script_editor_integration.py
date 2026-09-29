@@ -17,6 +17,7 @@ from collections import deque
 import checkpoint_manager
 from addresses import addresses
 from script_compiler import compile_script, Level
+from ramp_planning import plan_ramp_segments
 
 
 def _loop_flag(loop_id, key):
@@ -412,44 +413,15 @@ class ScriptEditor(QWidget):
                     current_temp = ctrl.read_value(loop_id, "temperature_pv")
                     cz_config = addresses.get(loop_id, {}).get("critical_zone")
 
-                    # STEP 3: Plan the ramp segments
-                    ramp_segments = []
-                    ramping_up = target_temp > current_temp
-                    plan_temp = current_temp
-
-                    if cz_config:
-                        cz_range = cz_config["range"]
-                        cz_rate = cz_config["slow_rate"]
-                        cz_start, cz_end = min(cz_range), max(cz_range)
-                        if ramping_up:
-                            if plan_temp < cz_start and target_temp > cz_start:
-                                ramp_segments.append({'target': cz_start, 'rate': normal_rate_min})
-                                plan_temp = cz_start
-                            if plan_temp < cz_end and target_temp > cz_start:
-                                ramp_segments.append({'target': min(cz_end, target_temp), 'rate': cz_rate})
-                                plan_temp = min(cz_end, target_temp)
-                        else:
-                            if plan_temp > cz_end and target_temp < cz_end:
-                                ramp_segments.append({'target': cz_end, 'rate': normal_rate_min})
-                                plan_temp = cz_end
-                            if plan_temp > cz_start and target_temp < cz_end:
-                                ramp_segments.append({'target': max(cz_start, target_temp), 'rate': cz_rate})
-                                plan_temp = max(cz_start, target_temp)
-
-                    if plan_temp != target_temp:
-                        ramp_segments.append({'target': target_temp, 'rate': normal_rate_min})
+                    # STEP 3: Plan the ramp segments (slowed inside the critical zone)
+                    ramp_segments = plan_ramp_segments(current_temp, target_temp,
+                                                       normal_rate_min, cz_config)
 
                     if not ramp_segments:
                         self.log_callback(f"[{loop_id}] Already at target temperature.")
                         return
 
-                    total_duration_min = 0.0
-                    calc_start_temp = current_temp
-                    for segment in ramp_segments:
-                        seg_rate = segment['rate']
-                        if seg_rate > 0:
-                            total_duration_min += abs(segment['target'] - calc_start_temp) / seg_rate
-                            calc_start_temp = segment['target']
+                    total_duration_min = sum(seg.duration_min for seg in ramp_segments)
 
                     finish_time = datetime.now() + timedelta(minutes=total_duration_min)
                     self.log_callback(
@@ -469,9 +441,9 @@ class ScriptEditor(QWidget):
                     first_seg = ramp_segments[0]
                     self.log_callback(
                         f"[{loop_id}] Segment 1/{len(ramp_segments)}: "
-                        f"Ramping to {first_seg['target']}°C at {first_seg['rate']}°C/min.")
-                    ctrl.write_register(loop_id, "Ramp_temp", first_seg['rate'])
-                    ctrl.write_value(loop_id, "temperature_setpoint", first_seg['target'])
+                        f"Ramping to {first_seg.target}°C at {first_seg.rate}°C/min.")
+                    ctrl.write_register(loop_id, "Ramp_temp", first_seg.rate)
+                    ctrl.write_value(loop_id, "temperature_setpoint", first_seg.target)
 
                     if len(ramp_segments) > 1:
                         remaining_segs = ramp_segments[1:]
@@ -495,14 +467,14 @@ class ScriptEditor(QWidget):
                                     return
                                 self.log_callback(
                                     f"[{loop_id}] Segment {idx}/{n_total}: "
-                                    f"Ramping to {seg['target']}°C at {seg['rate']}°C/min.")
-                                ctrl.write_register(loop_id, "Ramp_temp", seg['rate'])
-                                ctrl.write_value(loop_id, "temperature_setpoint", seg['target'])
-                                prev_target = seg['target']
+                                    f"Ramping to {seg.target}°C at {seg.rate}°C/min.")
+                                ctrl.write_register(loop_id, "Ramp_temp", seg.rate)
+                                ctrl.write_value(loop_id, "temperature_setpoint", seg.target)
+                                prev_target = seg.target
 
                         threading.Thread(
                             target=_continue_segments,
-                            args=(remaining_segs, first_seg['target']),
+                            args=(remaining_segs, first_seg.target),
                             daemon=True,
                         ).start()
 
