@@ -9,7 +9,14 @@ import script_compiler
 from script_compiler import compile_script, Level, CompileMessage
 
 ADDR = {
-    "Au":    {"temperature_pv": (1, 1), "shutter_line": "Dev1/port0/line1"},
+    "Au":    {"temperature_pv": (1, 1), "shutter_line": "Dev1/port0/line1",
+              "limits": {"max_temp_rate": 15, "min_power_rate": 0.01, "max_temp": 1100,
+                         "power_ramp_allowed": False}},
+    "Sub":   {"temperature_pv": (1, 1),
+              "limits": {"max_temp_rate": 20, "min_power_rate": 0.01,
+                         "max_temp": 900, "min_temp": 20, "power_ramp_allowed": True}},
+    "NoLim": {"temperature_pv": (1, 1), "limits": {"max_temp": None}},
+    "NoMin": {"temperature_pv": (1, 1), "limits": {"power_ramp_allowed": True}},
     "eGun1": {"shutter_line": "Dev1/port1/line0"},
 }
 
@@ -18,9 +25,13 @@ def compile_(code):
     return compile_script(code, addresses=ADDR)
 
 
+def error_texts(code):
+    return [m.format() for m in compile_(code).errors]
+
+
 class TestCompile(unittest.TestCase):
     def test_valid_script(self):
-        r = compile_('power_ramp("Au", 60, 2)\nhold(1)\n'
+        r = compile_('power_ramp("Sub", 60, 2)\nhold(1)\n'
                      'wait_until_temperature("Au", 300, tolerance=1, timeout=None)\n'
                      'open_shutter("eGun1")\nwait_until("2026-10-01 08:30")')
         self.assertTrue(r.ok, r.format_lines())
@@ -50,6 +61,69 @@ class TestCompile(unittest.TestCase):
                      'wait_until_temperature("Au", 300, 0.5, tolerance=1)\n'
                      'wait_until_temperature("Au", 300, tolerance="x", timeout="y")')
         self.assertEqual([m.line for m in r.errors], [1, 2, 3, 3])
+
+    # ── Hardware limits (#5) ──────────────────────────────────────────────────
+    def test_ramp_rate_limits(self):
+        self.assertEqual(error_texts(
+            'temperature_ramp("Au", 500, 25)\n'
+            'temperature_ramp("Au", 500, 15)\n'       # at the limit: OK
+            'temperature_ramp("Sub", 500, 20)\n'      # substrate limit is 20
+            'temperature_ramp("Sub", 500, 20.5)\n'
+            'power_ramp("Sub", 30, 0.005)\n'
+            'power_ramp("Sub", 30, 0.01)\n'           # at the limit: OK
+            'power_ramp("Sub", 30, 50)\n'             # no max power rate
+            'temperature_ramp("Au", 500, 0)'),
+            ["ERROR line 1: temperature_ramp Au = 25 °C/min, max allowed 15 °C/min",
+             "ERROR line 4: temperature_ramp Sub = 20.5 °C/min, max allowed 20 °C/min",
+             "ERROR line 5: power_ramp Sub = 0.005 %/s, min allowed 0.01 %/s",
+             "ERROR line 8: temperature_ramp Au = 0 °C/min, must be greater than 0 °C/min"])
+
+    def test_power_ramp_not_allowed_on_cells(self):
+        self.assertEqual(error_texts('power_ramp("Au", 30, 0.001)\npower_ramp("Sub", 30, 0.5)'),
+                         ["ERROR line 1: power_ramp is not allowed on Au"])
+
+    def test_temperature_target_limits(self):
+        self.assertEqual(error_texts(
+            'temperature_ramp("Au", 1250, 5)\n'
+            'temperature_ramp("Au", 1100, 5)\n'       # at the limit: OK
+            'temperature_ramp("Sub", 10, 5)\n'
+            'temperature_ramp("Au", 5, 5)'),          # no min_temp for Au: OK
+            ["ERROR line 1: temperature_ramp Au target = 1250 °C, max allowed 1100 °C",
+             "ERROR line 3: temperature_ramp Sub target = 10 °C, min allowed 20 °C"])
+
+    def test_keyword_arguments_are_checked(self):
+        # check_commands already rejects keyword ramp arguments; limits are still reported.
+        errors = error_texts('temperature_ramp("Au", normal_rate_min=30, target_temp=1200)\n'
+                             'power_ramp("Sub", 30, rate=0.001)')
+        for text in ["ERROR line 1: temperature_ramp Au = 30 °C/min, max allowed 15 °C/min",
+                     "ERROR line 1: temperature_ramp Au target = 1200 °C, max allowed 1100 °C",
+                     "ERROR line 2: power_ramp Sub = 0.001 %/s, min allowed 0.01 %/s"]:
+            self.assertIn(text, errors)
+
+    def test_missing_limit_is_error(self):
+        self.assertEqual(error_texts(
+            'temperature_ramp("NoLim", 100, 5)\npower_ramp("NoLim", 10, 1)\n'
+            'wait_until_temperature("NoLim", 100)\npower_ramp("NoMin", 10, 1)'),
+            ["ERROR line 1: No 'max_temp_rate' limit defined for NoLim in addresses.py",
+             "ERROR line 1: No 'max_temp' limit defined for NoLim in addresses.py",
+             "ERROR line 2: No 'power_ramp_allowed' limit defined for NoLim in addresses.py",
+             "ERROR line 3: No 'max_temp' limit defined for NoLim in addresses.py",
+             "ERROR line 4: No 'min_power_rate' limit defined for NoMin in addresses.py"])
+
+    def test_wait_until_temperature_limits(self):
+        self.assertEqual(error_texts(
+            'power_ramp("Sub", 30, 0.5)\n'
+            'wait_until_temperature("Au", 1150)\n'
+            'temperature_ramp("Au", 200, 5)\n'
+            'wait_until_temperature("Au", 300)\n'     # waiting while cooling down: OK
+            'wait_until_temperature("Sub", 10)'),
+            ["ERROR line 2: wait_until_temperature Au target = 1150 °C, max allowed 1100 °C",
+             "ERROR line 5: wait_until_temperature Sub target = 10 °C, min allowed 20 °C"])
+
+    def test_limit_checks_skip_invalid_arguments(self):
+        # Wrong types / unknown loops are reported once, by check_commands.
+        r = compile_('temperature_ramp("Au", "hot", "fast")\npower_ramp("Xx", 30, 0.001)')
+        self.assertEqual([m.line for m in r.errors], [1, 1, 2])
 
     def test_order_summary_and_warning_only(self):
         def warn(ctx):
