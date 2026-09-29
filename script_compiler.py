@@ -17,12 +17,14 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Callable, Iterator
 
+from pressure_interlock import config_problem, gauge_name, interlock_for_line, is_bypassed
 from ramp_planning import Segment, plan_ramp_segments, time_to_reach
 
 
 class Level(Enum):
     ERROR = "ERROR"      # blocks Run
     WARNING = "WARNING"  # informs the user, does not block Run
+    INFO = "INFO"        # informs the user, does not block Run
 
 
 @dataclass
@@ -75,7 +77,7 @@ class CompileReport:
                 f"{n_warn} warning{'s' if n_warn != 1 else ''}")
 
     def format_lines(self) -> list[str]:
-        """Errors, then warnings, then the summary line, summary entries and time estimate."""
+        """Errors, warnings, infos, then the summary line, summary entries and time estimate."""
         lines = [m.format() for m in self.messages]
         lines.append(self.summary_line())
         lines.extend(f"{label}: {value}" for label, value in self.summary.items())
@@ -522,6 +524,43 @@ def check_critical_zones(ctx: CompileContext) -> list[CompileMessage]:
     return warnings
 
 
+# ── Pressure interlock (#8) ──────────────────────────────────────────────────
+# The pressure itself is checked at execution time (ShutterController), just
+# before each opening; compile only says where, and rejects a bad configuration.
+
+def check_pressure_interlock(ctx: CompileContext) -> list[CompileMessage]:
+    """
+    INFO for each open_shutter on an interlocked line; ERROR if its configuration
+    is invalid; WARNING instead when the interlock is bypassed in addresses.py.
+    """
+    messages = []
+    for line, name, node in iter_calls(ctx.tree):
+        if name != "open_shutter":
+            continue
+        arg = _bound_args(node).get("shutter_id")
+        if not (isinstance(arg, ast.Constant) and isinstance(arg.value, str)):
+            continue  # reported by check_commands
+        line_name = ctx.addresses.get(arg.value, {}).get("shutter_line")
+        config = interlock_for_line(ctx.addresses, line_name) if line_name else None
+        if config is None:
+            continue
+        if is_bypassed(config):
+            messages.append(CompileMessage(
+                Level.WARNING, line,
+                f"pressure interlock BYPASSED in addresses.py: {arg.value} opens without "
+                f"checking {gauge_name(ctx.addresses)}"))
+            continue
+        problem = config_problem(ctx.addresses, config)
+        if problem:
+            messages.append(_error(line, f"{arg.value} pressure interlock: {problem}"))
+        else:
+            messages.append(CompileMessage(
+                Level.INFO, line,
+                f"{gauge_name(ctx.addresses)} pressure checked before opening {arg.value}: "
+                f"required < {config['max_pressure_mbar']:.1e} mbar, else the script stops"))
+    return messages
+
+
 # ── Time estimation (#7) ─────────────────────────────────────────────────────
 # Ramps run in the background, in parallel on different loops; the script clock
 # only advances at hold, wait_until and wait_until_temperature. The clock starts
@@ -829,6 +868,7 @@ CHECKS: list[Check] = [
     check_ramp_rates,
     check_temperature_targets,
     check_critical_zones,
+    check_pressure_interlock,
     check_time_estimate,
 ]
 
@@ -837,7 +877,7 @@ def compile_script(code: str, addresses: dict | None = None,
                    controllers: dict | None = None,
                    now: datetime | None = None) -> CompileReport:
     """
-    Run all CHECKS on `code` and return the report (errors first, then warnings).
+    Run all CHECKS on `code` and return the report (errors, then warnings, then infos).
     `now` is the script start used by the time estimate (default: compile time).
     """
     if addresses is None:
@@ -857,7 +897,7 @@ def compile_script(code: str, addresses: dict | None = None,
             # A broken check must never let a script through.
             messages.append(_error(None, f"Internal failure in {check.__name__}: {e}"))
 
-    level_order = {Level.ERROR: 0, Level.WARNING: 1}
+    level_order = {Level.ERROR: 0, Level.WARNING: 1, Level.INFO: 2}
     messages.sort(key=lambda m: (level_order[m.level],
                                  m.line if m.line is not None else 0))
     report = CompileReport(code, messages, ctx.summary)
