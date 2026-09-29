@@ -96,7 +96,7 @@ def iter_calls(tree: ast.Module) -> Iterator[tuple[int, str, ast.Call]]:
 
 # Parameter names of the DSL functions defined in ScriptEditor.run_script().
 DSL_PARAMS = {
-    "power_ramp":             ("loop_id", "target_power", "duration_min"),
+    "power_ramp":             ("loop_id", "target_power", "rate"),
     "temperature_ramp":       ("loop_id", "target_temp", "normal_rate_min"),
     "hold":                   ("duration_min",),
     "wait_until":             ("datetime_str",),
@@ -319,11 +319,110 @@ def check_call_arguments(ctx: CompileContext) -> list[CompileMessage]:
     return errors
 
 
+# ── Hardware limits (#5) ─────────────────────────────────────────────────────
+# Limits live in addresses[loop_id]["limits"]; a missing (or None) limit needed
+# by the script is an ERROR, never a skipped check. Arguments that are not
+# numbers / unknown loops are already reported by check_commands and skipped here.
+
+def _bound_args(node: ast.Call) -> dict:
+    """Parameter name -> argument node, positional then keyword (invalid ones ignored)."""
+    params = DSL_PARAMS.get(node.func.id, ())
+    passed = dict(zip(params, node.args))
+    for kw in node.keywords:
+        if kw.arg in params and kw.arg not in passed:
+            passed[kw.arg] = kw.value
+    return passed
+
+
+def _number_arg(passed: dict, name: str):
+    node = passed.get(name)
+    return node.value if _is_number(node) else None
+
+
+def _loop_arg(passed: dict, addresses: dict):
+    node = passed.get("loop_id")
+    if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and "temperature_pv" in addresses.get(node.value, {})):
+        return node.value
+    return None
+
+
+def _required_limit(ctx: CompileContext, loop_id: str, key: str, line: int, errors: list):
+    value = ctx.addresses[loop_id].get("limits", {}).get(key)
+    if value is None:
+        errors.append(_error(line, f"No '{key}' limit defined for {loop_id} in addresses.py"))
+    return value
+
+
+def check_ramp_rates(ctx: CompileContext) -> list[CompileMessage]:
+    """
+    temperature_ramp: 0 < rate <= max_temp_rate (°C/min).
+    power_ramp: only on loops with power_ramp_allowed, rate >= min_power_rate (%/s).
+    """
+    errors = []
+    for line, name, node in iter_calls(ctx.tree):
+        if name not in ("temperature_ramp", "power_ramp"):
+            continue
+        passed = _bound_args(node)
+        loop_id = _loop_arg(passed, ctx.addresses)
+        if loop_id is None:
+            continue
+
+        if name == "temperature_ramp":
+            max_rate = _required_limit(ctx, loop_id, "max_temp_rate", line, errors)
+            rate = _number_arg(passed, "normal_rate_min")
+            if rate is not None and rate <= 0:
+                errors.append(_error(line, f"temperature_ramp {loop_id} = {rate:g} °C/min, "
+                                           f"must be greater than 0 °C/min"))
+            elif max_rate is not None and rate is not None and rate > max_rate:
+                errors.append(_error(line, f"temperature_ramp {loop_id} = {rate:g} °C/min, "
+                                           f"max allowed {max_rate:g} °C/min"))
+        else:
+            allowed = _required_limit(ctx, loop_id, "power_ramp_allowed", line, errors)
+            if allowed is None:
+                continue
+            if not allowed:
+                errors.append(_error(line, f"power_ramp is not allowed on {loop_id}"))
+                continue
+            min_rate = _required_limit(ctx, loop_id, "min_power_rate", line, errors)
+            rate = _number_arg(passed, "rate")
+            if min_rate is not None and rate is not None and rate < min_rate:
+                errors.append(_error(line, f"power_ramp {loop_id} = {rate:g} %/s, "
+                                           f"min allowed {min_rate:g} %/s"))
+    return errors
+
+
+def check_temperature_targets(ctx: CompileContext) -> list[CompileMessage]:
+    """Targets of temperature_ramp and wait_until_temperature within [min_temp (optional), max_temp]."""
+    errors = []
+    for line, name, node in iter_calls(ctx.tree):
+        if name not in ("temperature_ramp", "wait_until_temperature"):
+            continue
+        passed = _bound_args(node)
+        loop_id = _loop_arg(passed, ctx.addresses)
+        if loop_id is None:
+            continue
+        max_temp = _required_limit(ctx, loop_id, "max_temp", line, errors)
+        min_temp = ctx.addresses[loop_id].get("limits", {}).get("min_temp")
+        target = _number_arg(passed, "target_temp")
+        if target is None:
+            continue
+        if max_temp is not None and target > max_temp:
+            errors.append(_error(line, f"{name} {loop_id} target = {target:g} °C, "
+                                       f"max allowed {max_temp:g} °C"))
+        if min_temp is not None and target < min_temp:
+            errors.append(_error(line, f"{name} {loop_id} target = {target:g} °C, "
+                                       f"min allowed {min_temp:g} °C"))
+    return errors
+
+
 # Registry: every check runs on each compilation. Append new checks here.
 CHECKS: list[Check] = [
     check_statements,
     check_commands,
     check_call_arguments,
+    check_ramp_rates,
+    check_temperature_targets,
 ]
 
 

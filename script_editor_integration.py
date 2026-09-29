@@ -113,7 +113,7 @@ class ScriptEditor(QWidget):
         self._hw_wait_items = []  # [(loop_id, finish_datetime), ...] populated by temperature_ramp
 
         self.editor = QPlainTextEdit()
-        self.editor.setPlainText("""power_ramp(\"Au\", 60, 2)\nhold(1)\npower_ramp(\"Au\", 30, 1)""")
+        self.editor.setPlainText("""temperature_ramp(\"Au\", 300, 10)\nhold(1)\ntemperature_ramp(\"Au\", 25, 10)""")
 
         self.compile_button = QPushButton("Compile")
         self.compile_button.clicked.connect(self.compile_current)
@@ -284,7 +284,8 @@ class ScriptEditor(QWidget):
                     )
                 return ctrl
 
-            def power_ramp(loop_id, target_power, duration_min):
+            def power_ramp(loop_id, target_power, rate):
+                # rate in %/s, written as-is to the Ramp_OP register.
                 if self.stop_event.is_set():
                     return
                 ctrl = get_controller(loop_id)
@@ -303,11 +304,7 @@ class ScriptEditor(QWidget):
                     self.log_callback(f"[{loop_id}] Failed to read current power: {e}")
                     return
 
-                duration_sec = duration_min * 60
-                if duration_sec == 0:
-                    rate = 0
-                else:
-                    rate = abs(target_power - current_power) / duration_sec
+                duration_min = abs(target_power - current_power) / rate / 60
 
                 try:
                     ctrl.set_ramp_status(loop_id, True)

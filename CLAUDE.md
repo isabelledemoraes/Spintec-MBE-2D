@@ -50,7 +50,7 @@ Simulation mode: `SIMULATION = True` in `GUIv5.py` — uses `SimEurothermControl
 Scripts are plain text executed inside a sandboxed `exec()`. Allowed functions only:
 
 ```python
-power_ramp("Au", target_%, duration_min)
+power_ramp("Au", target_%, rate_%_per_s)
 temperature_ramp("Au", target_°C, rate_°C_per_min)
 hold(duration_min)
 open_shutter("eGun1")
@@ -72,7 +72,7 @@ another script, the run aborts. Locks are released in a `finally` block at end o
 
 **power_ramp behaviour**:
 - Switches controller to MANUAL mode.
-- Enables ramp generator, sets `Ramp_OP` rate (%/s), writes `output_setpoint`.
+- Enables ramp generator, writes the script rate (%/s) to `Ramp_OP`, writes `output_setpoint`.
 - Fire-and-return (does NOT block until target is reached).
 
 **Checkpoint recovery**: `checkpoint_manager.save(name, text, stmt_index)` is called before each
@@ -84,6 +84,13 @@ Each check is a function `(CompileContext) -> list[CompileMessage(level, line, t
 `CHECKS`; limits must come from `ctx.addresses`. The per-tab report panel lists errors, then warnings,
 then the summary line. Run is enabled only if the last report has 0 errors AND its `code` equals the
 current editor text; `run_script()` re-checks this. Editing the text marks the report outdated.
+
+**Limit checks** (#5): each Eurotherm loop in `addresses.py` has a `"limits"` dict
+(`max_temp_rate` °C/min, `power_ramp_allowed` (False for cells), `min_power_rate` %/s, `max_temp` °C,
+optional `min_temp` °C; shared values
+come from `CELL_LIMITS` / `SUBSTRATE_LIMITS` / `EUROTHERM_LIMITS`, see `config/addresses.py.example`).
+A limit missing or `None` for a loop used by the script is an ERROR. `temperature_ramp` rate must be
+> 0. Targets of `temperature_ramp` and `wait_until_temperature` are checked against `min/max_temp`.
 
 **Tab close protection**: `ScriptManager.close_tab` silently blocks if `editor.is_active()`.
 
@@ -126,7 +133,9 @@ QThread → EurothermWorker.run() → data_ready signal
 <!-- Update this section at the end of each session -->
 - Script close prevention: tab close blocked while script active ✅
 - Instrument lock UI (🔒 icon + grey out): `set_locked()` on InstrumentPanel ✅
-- Compile framework (#4): Check + preview graph removed, Compile + per-tab report added ✅; next: #5–#9 plug into `CHECKS`
+- Compile framework (#4): Check + preview graph removed, Compile + per-tab report added ✅; next: #6–#9 plug into `CHECKS`
+- Ramp limit checks (#5): `check_ramp_rates` + `check_temperature_targets`; `power_ramp` 3rd arg is
+  now a rate in %/s ✅ — real `max_temp`/`min_temp` values still to be set in each machine's `addresses.py`
 - Completion blocking (block script until all ramp segments physically done): IN PROGRESS
 - `wait_until("YYYY-MM-DD HH:MM")` DSL function: blocks script until target datetime, with countdown status label and stop-event support ✅
 - NI DAQ USB-6501 output init: `initialize_daq_outputs()` added to `shutter_controller.py`, called first in `GUIv5.py __main__` — sets all 24 lines LOW before any task is created ✅
