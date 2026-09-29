@@ -28,8 +28,38 @@ def _loop_flag(loop_id, key):
 # e.g., {"Au": "Script 1", "Se1": "Script 2"}
 active_script_locks = {}
 
-# A lock to prevent race conditions when accessing the dictionary itself
+# Same idea for shutters controlled by open_shutter/close_shutter in a running script.
+# Kept separate from loop locks: loop "Au" and shutter "Au" share a name but are
+# locked independently. e.g., {"eGun1": "Script 1", "Au": "Script 2"}
+active_shutter_locks = {}
+
+# A lock to prevent race conditions when accessing both dictionaries
 lock_manager_lock = threading.Lock()
+
+
+_SHUTTER_FUNCS = ("open_shutter", "close_shutter")
+
+
+def _script_ids(code: str) -> tuple[set[str], set[str]]:
+    """
+    Split the literal first arguments of script calls into
+    (IDs used by loop functions, IDs used by open_shutter/close_shutter),
+    so that open_shutter("Au") locks the Au shutter but not the Au loop.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return set(), set()
+    loop_ids, shutter_ids = set(), set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)):
+            target = shutter_ids if node.func.id in _SHUTTER_FUNCS else loop_ids
+            target.add(node.args[0].value)
+    return loop_ids, shutter_ids
 
 def _try_acquire_loops(owner: str, loops: set[str]) -> bool:
     """Return True iff all loops were reserved for this owner."""
@@ -44,11 +74,14 @@ def _try_acquire_loops(owner: str, loops: set[str]) -> bool:
         return True
 
 def _release_loops(owner: str):
-    """Release any loops owned by this owner."""
+    """Release any loops and shutters owned by this owner."""
     with lock_manager_lock:
         to_free = [lp for lp, who in active_script_locks.items() if who == owner]
         for lp in to_free:
             active_script_locks.pop(lp, None)
+        to_free = [sid for sid, who in active_shutter_locks.items() if who == owner]
+        for sid in to_free:
+            active_shutter_locks.pop(sid, None)
 
 
 
@@ -59,11 +92,13 @@ class ScriptEditor(QWidget):
     # Emitted to update the hardware-wait status label ("" to clear).
     _hw_status = pyqtSignal(str)
 
-    def __init__(self, script_name, log_callback, controllers=None):
+    def __init__(self, script_name, log_callback, controllers=None, shutter_ctrl=None):
         super().__init__()
         self.script_name = script_name
         self.log_callback = log_callback
         self.shared_controllers = controllers if controllers is not None else {}
+        # Shared with the General View so shutter buttons follow script actions.
+        self.shutter_ctrl = shutter_ctrl
         self.thread = None
         self.stop_event = threading.Event()
         self.live_plot_data = deque(maxlen=3600)  # rolling 1-hour window at 1 Hz
@@ -145,16 +180,16 @@ class ScriptEditor(QWidget):
 
         def runner():
             from addresses import addresses
-            import re
 
             # --- START OF NEW LOCKING LOGIC ---
 
-            # Find all IDs used as first argument in calls like power_ramp("Au", ...)
-            all_ids = set(re.findall(r'\(["\'](\w+)["\']', code))
+            # IDs used as first argument in calls like power_ramp("Au", ...);
+            # shutter calls are collected separately (shutter locks below).
+            loop_call_ids, used_shutters = _script_ids(code)
 
             # Consider only real Eurotherm loops: entries that have a temperature_pv register.
             used_loops = {
-                loop_id for loop_id in all_ids
+                loop_id for loop_id in loop_call_ids
                 if loop_id in addresses
                 and isinstance(addresses[loop_id], dict)
                 and "temperature_pv" in addresses[loop_id]
@@ -182,11 +217,34 @@ class ScriptEditor(QWidget):
                             # Release any locks we might have acquired before failing
                             for locked_loop in acquired_locks:
                                 del active_script_locks[locked_loop]
+                            self._stmt_highlight.emit(-1, 0)  # unlock the editor
                             return
 
                         # Reserve this loop for the current script
                         active_script_locks[loop] = owner_id
                         acquired_locks.append(loop)
+
+            # Reserve only the shutters this script opens/closes; their
+            # General View buttons are disabled until the run ends.
+            acquired_shutters = []
+            if used_shutters:
+                with lock_manager_lock:
+                    busy = sorted(s for s in used_shutters if s in active_shutter_locks)
+                    if busy:
+                        self.log_callback(
+                            f"[{self.script_name}] FATAL ERROR: Shutter(s) {', '.join(busy)} "
+                            f"already controlled by another script. Aborting."
+                        )
+                        for locked_loop in acquired_locks:
+                            active_script_locks.pop(locked_loop, None)
+                        self._stmt_highlight.emit(-1, 0)  # unlock the editor
+                        return
+                    for sid in used_shutters:
+                        active_shutter_locks[sid] = owner_id
+                    acquired_shutters = sorted(used_shutters)
+                self.log_callback(
+                    f"[{self.script_name}] Script controls shutters: {', '.join(acquired_shutters)}"
+                )
 
             # --- END OF NEW LOCKING LOGIC ---
 
@@ -570,9 +628,6 @@ class ScriptEditor(QWidget):
 
             # --- SHUTTER HELPERS ---
 
-            from shutter_controller import ShutterController
-            shutter_ctrl = ShutterController()
-
             def _resolve_shutter_line(shutter_id: str):
                 """
                 Resolve a shutter ID to its NI-DAQ line.
@@ -583,29 +638,34 @@ class ScriptEditor(QWidget):
                     raise KeyError(f"Unknown shutter id '{shutter_id}' in addresses.py")
                 return shutter_id, info["shutter_line"]
 
+            def _set_shutter(shutter_id: str, state: bool):
+                """
+                Write a shutter through the shared controller.
+                Any failure raises, which stops the run (caught by the runner below).
+                """
+                word = "OPEN" if state else "CLOSED"
+                if self.shutter_ctrl is None:
+                    raise RuntimeError(f"No shutter controller available to set '{shutter_id}' {word}.")
+                loop_key, line_name = _resolve_shutter_line(shutter_id)
+                if not self.shutter_ctrl.set_shutter(loop_key, line_name, state):
+                    raise RuntimeError(
+                        f"Shutter '{shutter_id}' could not be set {word} (line: {line_name}). Script stopped."
+                    )
+                self.log_callback(f"[Shutter] {shutter_id} → {word} (line: {line_name})")
+
             def open_shutter(shutter_id: str):
                 """Open a shutter (global or associated to a loop)."""
                 if self.stop_event.is_set():
                     self.log_callback(f"[Shutter] open_shutter('{shutter_id}') skipped — script stopped.")
                     return
-                try:
-                    loop_key, line_name = _resolve_shutter_line(shutter_id)
-                    shutter_ctrl.set_shutter(loop_key, line_name, True)
-                    self.log_callback(f"[Shutter] {shutter_id} → OPEN (line: {line_name})")
-                except Exception as e:
-                    self.log_callback(f"[Shutter] Failed to open '{shutter_id}': {e}")
+                _set_shutter(shutter_id, True)
 
             def close_shutter(shutter_id: str):
                 """Close a shutter (global or associated to a loop)."""
                 if self.stop_event.is_set():
                     self.log_callback(f"[Shutter] close_shutter('{shutter_id}') skipped — script stopped.")
                     return
-                try:
-                    loop_key, line_name = _resolve_shutter_line(shutter_id)
-                    shutter_ctrl.set_shutter(loop_key, line_name, False)
-                    self.log_callback(f"[Shutter] {shutter_id} → CLOSED (line: {line_name})")
-                except Exception as e:
-                    self.log_callback(f"[Shutter] Failed to close '{shutter_id}': {e}")
+                _set_shutter(shutter_id, False)
 
 
 
@@ -690,9 +750,11 @@ class ScriptEditor(QWidget):
                     for loop in acquired_locks:
                         if loop in active_script_locks:
                             del active_script_locks[loop]
+                    for sid in acquired_shutters:
+                        active_shutter_locks.pop(sid, None)
                 self.log_callback(
                     f"[{self.script_name}] Released instrument locks: "
-                    f"{', '.join(acquired_locks)}"
+                    f"{', '.join(acquired_locks + acquired_shutters)}"
                 )
                 # Clear hardware-wait label and unlock the editor.
                 self._hw_status.emit("")
@@ -1170,10 +1232,11 @@ class ScriptEditor(QWidget):
 
 
 class ScriptManager(QWidget):
-    def __init__(self, log_callback, controllers=None):
+    def __init__(self, log_callback, controllers=None, shutter_ctrl=None):
         super().__init__()
         self.log_callback = log_callback
         self.controllers = controllers if controllers is not None else {}
+        self.shutter_ctrl = shutter_ctrl
         self.tab_counter = 1
 
         self.tabs = QTabWidget()
@@ -1192,7 +1255,7 @@ class ScriptManager(QWidget):
 
     def add_new_tab(self):
         name = f"Script {self.tab_counter}"
-        editor = ScriptEditor(name, self.log_callback, self.controllers)
+        editor = ScriptEditor(name, self.log_callback, self.controllers, self.shutter_ctrl)
         self.tabs.addTab(editor, name)
         self.tab_counter += 1
 

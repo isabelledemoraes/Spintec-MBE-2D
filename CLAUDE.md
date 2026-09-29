@@ -87,8 +87,9 @@ statement. On next launch after a crash, `watchdog.py` keeps GUIv5 alive and a r
 - Log output strip at bottom (read-only `QTextEdit`, max 120 px)
 - Log mode bar: Standby / Growth + filename + Confirm + 📊 Dashboard button
 
-`InstrumentPanel.set_locked(owner)` — greys out setpoint input, Set button, and shutter button;
-shows 🔒 icon with tooltip "Locked by {owner}".
+`InstrumentPanel.set_locked(owner)` — greys out setpoint input and Set button (loop lock);
+shows 🔒 icon with tooltip "Locked by {owner}". The shutter button is locked separately by
+`set_shutter_display(state, owner)`, only when the script calls open/close_shutter on it.
 
 ## Data flow
 ```
@@ -121,6 +122,10 @@ QThread → EurothermWorker.run() → data_ready signal
 - Completion blocking (block script until all ramp segments physically done): IN PROGRESS
 - `wait_until("YYYY-MM-DD HH:MM")` DSL function: blocks script until target datetime, with countdown status label and stop-event support ✅
 - NI DAQ USB-6501 output init: `initialize_daq_outputs()` added to `shutter_controller.py`, called first in `GUIv5.py __main__` — sets all 24 lines LOW before any task is created ✅
+- Shutter status sync (issue #1): one shared `ShutterController` (GUI + scripts); General View
+  refreshes shutter state every 1 s; shutters used by a running script are reserved in
+  `active_shutter_locks` (separate from loop locks) and only those buttons are disabled; a failed
+  shutter write stops the script ✅ — tested in simulation, not yet on real NI-DAQ
 - Pressure gauge: simulated OK; real COM10 not yet tested end-to-end
 - `gui_main.py` uses a relative import `.GUIv5` — will fail if run directly; use `watchdog.py`
 

@@ -126,9 +126,10 @@ class InstrumentPanel(QFrame):
     def set_locked(self, owner: str | None):
         """Grey out controls and show lock icon when an instrument is in use by a script."""
         locked = owner is not None
+        # The shutter button is locked separately (set_shutter_display), only
+        # when the script actually opens/closes this shutter.
         self.setpoint_input.setEnabled(not locked)
         self.set_temp_btn.setEnabled(not locked)
-        self.shutter_btn.setEnabled(not locked)
         if locked:
             self.lock_label.setText("🔒")
             self.lock_label.setToolTip(f"Locked by {owner}")
@@ -139,12 +140,25 @@ class InstrumentPanel(QFrame):
     def set_status_dot(self, color):
         self.status_dot.setStyleSheet(f"background-color: {color}; border-radius: 6px;")
 
+    def set_shutter_display(self, state: bool, owner: str | None):
+        """Show the real shutter state; disable the button while a script controls it."""
+        self.shutter_state = state
+        self.shutter_btn.setChecked(state)
+        self.update_shutter_style()
+        self.shutter_btn.setEnabled(owner is None)
+        self.shutter_btn.setToolTip(f"🔒 Controlled by {owner}" if owner else "")
+
     def toggle_shutter(self):
-        self.shutter_state = self.shutter_btn.isChecked()
+        requested = self.shutter_btn.isChecked()
+        if USE_SHUTTER_HARDWARE and self.shutter_ctrl and self.shutter_line:
+            if not self.shutter_ctrl.set_shutter(self.name, self.shutter_line, requested):
+                # Write failed: keep showing the previous (real) state.
+                self.shutter_btn.setChecked(self.shutter_state)
+                print(f"[{self.name}] Shutter write failed; state unchanged ({self.shutter_state})")
+                return
+        self.shutter_state = requested
         self.update_shutter_style()
         print(f"[{self.name}] Shutter state = {self.shutter_state}")
-        if USE_SHUTTER_HARDWARE and self.shutter_ctrl and self.shutter_line:
-            self.shutter_ctrl.set_shutter(self.name, self.shutter_line, self.shutter_state)
 
     def update_shutter_style(self):
         if self.shutter_state:
@@ -233,7 +247,11 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(dash_btn)
 
         layout.addLayout(log_layout)
-        self.script_tab = ScriptManager(log_callback=self.append_log, controllers=self.controllers)
+        self.script_tab = ScriptManager(
+            log_callback=self.append_log,
+            controllers=self.controllers,
+            shutter_ctrl=self.shutter_ctrl,
+        )
         self.tabs.addTab(self.script_tab, "Scripts")
 
 #self.plot_tab = PlotTab()  # ✅ connect external tab
@@ -355,14 +373,32 @@ class MainWindow(QMainWindow):
             self.append_log("[Recovery] Checkpoint discarded.")
 
     def _update_instrument_locks(self):
-        """Poll active_script_locks and update lock icons on instrument panels."""
-        from script_editor_integration import active_script_locks, lock_manager_lock
+        """
+        Poll script locks and the shared shutter controller (every 1 s):
+        lock icons on instrument panels, plus real state and lock of every shutter button.
+        """
+        from script_editor_integration import active_script_locks, active_shutter_locks, lock_manager_lock
         with lock_manager_lock:
             snapshot = dict(active_script_locks)
+            shutter_snapshot = dict(active_shutter_locks)
+        sync_shutters = USE_SHUTTER_HARDWARE and self.shutter_ctrl is not None
         for panel in self.instrument_panels:
             if isinstance(panel, InstrumentPanel):
                 owner = snapshot.get(panel.name)
                 panel.set_locked(owner if isinstance(owner, str) else None)
+                if sync_shutters and panel.shutter_line:
+                    panel.set_shutter_display(
+                        self.shutter_ctrl.get_state(panel.name),
+                        shutter_snapshot.get(panel.name),
+                    )
+        if sync_shutters:
+            for shutter_id, (btn, label_text) in self.global_shutter_buttons.items():
+                state = self.shutter_ctrl.get_state(shutter_id)
+                owner = shutter_snapshot.get(shutter_id)
+                btn.setChecked(state)
+                self.update_global_shutter_style(btn, label_text, state)
+                btn.setEnabled(owner is None)
+                btn.setToolTip(f"🔒 Controlled by {owner}" if owner else "")
 
     def append_log(self, message):
         now = datetime.now()
@@ -428,7 +464,7 @@ class MainWindow(QMainWindow):
             )
 
             layout.addWidget(btn)
-            self.global_shutter_buttons[shutter_id] = btn
+            self.global_shutter_buttons[shutter_id] = (btn, label_text)
 
         #row = self.general_layout.rowCount()
         #self.general_layout.addWidget(frame, row, 0, 1, 1)
@@ -451,13 +487,18 @@ class MainWindow(QMainWindow):
         """Callback when a global shutter button is toggled."""
         from addresses import addresses  # to access line names
 
-        self.update_global_shutter_style(button, label_prefix, state)
         line_name = addresses.get(shutter_id, {}).get("shutter_line")
 
         print(f"[Global Shutter] {shutter_id} → {state} (line: {line_name})")
 
         if USE_SHUTTER_HARDWARE and self.shutter_ctrl and line_name:
-            self.shutter_ctrl.set_shutter(shutter_id, line_name, state)
+            if not self.shutter_ctrl.set_shutter(shutter_id, line_name, state):
+                # Write failed: revert the button to the previous (real) state.
+                state = not state
+                button.setChecked(state)
+                self.append_log(f"[Shutter] Failed to set {shutter_id}; state unchanged.")
+
+        self.update_global_shutter_style(button, label_prefix, state)
 
     def handle_data_update(self, name, data):
             for panel in self.instrument_panels:
