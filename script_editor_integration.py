@@ -92,10 +92,14 @@ class ScriptEditor(QWidget):
     # Emitted to update the hardware-wait status label ("" to clear).
     _hw_status = pyqtSignal(str)
 
-    def __init__(self, script_name, log_callback, controllers=None, shutter_ctrl=None):
+    def __init__(self, script_name, log_callback, controllers=None, shutter_ctrl=None,
+                 open_script_callback=None):
         super().__init__()
         self.script_name = script_name
         self.log_callback = log_callback
+        # Called as open_script_callback(filepath, content) by load_script to open the
+        # file in a new tab; if None, the file is loaded into this editor instead.
+        self.open_script_callback = open_script_callback
         self.shared_controllers = controllers if controllers is not None else {}
         # Shared with the General View so shutter buttons follow script actions.
         self.shutter_ctrl = shutter_ctrl
@@ -1125,10 +1129,15 @@ class ScriptEditor(QWidget):
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     content = f.read()
-                    self.editor.setPlainText(content)
-                self.log_callback(f"[{self.script_name}] Script loaded from {filepath}")
             except Exception as e:
                 self.log_callback(f"[{self.script_name}] Load failed: {e}")
+                return
+            if self.open_script_callback is not None:
+                self.open_script_callback(filepath, content)
+            else:
+                self.editor.setPlainText(content)
+                self.editor.setFocus()
+                self.log_callback(f"[{self.script_name}] Script loaded from {filepath}")
 
     def show_preview_plot(self, recipe_data, temp_data=None):
         dialog = QDialog(self)
@@ -1255,9 +1264,26 @@ class ScriptManager(QWidget):
 
     def add_new_tab(self):
         name = f"Script {self.tab_counter}"
-        editor = ScriptEditor(name, self.log_callback, self.controllers, self.shutter_ctrl)
-        self.tabs.addTab(editor, name)
         self.tab_counter += 1
+        return self._create_tab(name)
+
+    def open_script_tab(self, filepath, content):
+        """Open a script loaded from disk in a new tab named after the file."""
+        name = os.path.splitext(os.path.basename(filepath))[0]
+        editor = self._create_tab(name, content)
+        self.log_callback(f"[{name}] Script loaded from {filepath}")
+        return editor
+
+    def _create_tab(self, name, content=None):
+        """Create a script tab, make it the active one and put the cursor in its editor."""
+        editor = ScriptEditor(name, self.log_callback, self.controllers, self.shutter_ctrl,
+                              open_script_callback=self.open_script_tab)
+        if content is not None:
+            editor.editor.setPlainText(content)
+        index = self.tabs.addTab(editor, name)
+        self.tabs.setCurrentIndex(index)
+        editor.editor.setFocus()
+        return editor
 
     def close_tab(self, index: int):
         """Safely close a finished or unwanted script tab."""
