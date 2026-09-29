@@ -2,6 +2,7 @@
 import os
 import sys
 import unittest
+from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -29,17 +30,28 @@ ADDR = {
 
 
 class FakeController:
-    """Only what the compiler reads: temperature_pv of each loop."""
-    def __init__(self, temps):
+    """Only what the compiler reads: temperature_pv (and output_pv) of each loop."""
+    def __init__(self, temps, outputs=None):
         self.temps = temps
+        self.outputs = outputs or {}
 
     def read_value(self, loop_id, name):
-        return self.temps[loop_id]
+        return self.outputs[loop_id] if name == "output_pv" else self.temps[loop_id]
 
 
-def compile_(code, temps=None):
-    controllers = {loop_id: FakeController(temps) for loop_id in (temps or {})}
-    return compile_script(code, addresses=ADDR, controllers=controllers)
+NOW = datetime(2026, 9, 29, 22, 0)
+
+
+def compile_(code, temps=None, outputs=None, now=NOW):
+    ctrl = FakeController(temps or {}, outputs)
+    controllers = {loop_id: ctrl for loop_id in {**(temps or {}), **(outputs or {})}}
+    return compile_script(code, addresses=ADDR, controllers=controllers, now=now)
+
+
+def timing_lines(code, temps=None, outputs=None):
+    r = compile_(code, temps, outputs)
+    assert r.ok, r.format_lines()
+    return r.timing.format_lines()
 
 
 def warning_texts(code, temps=None):
@@ -220,13 +232,134 @@ class TestCompile(unittest.TestCase):
         try:
             r = compile_('hold(1)')
             self.assertTrue(r.ok)
-            self.assertEqual(r.format_lines(), ["WARNING line 1: careful",
+            self.assertEqual(r.format_lines()[:3], ["WARNING line 1: careful",
                                                 "Compilation OK: 0 errors, 1 warning",
                                                 "Estimated duration: 1 min"])
             r = compile_('hold(1)\nbad(1)')
             self.assertEqual([m.level for m in r.messages], [Level.ERROR, Level.WARNING])
         finally:
             script_compiler.CHECKS.remove(warn)
+
+    # ── Time estimation (#7) ──────────────────────────────────────────────────
+    def test_parallel_ramps_then_hold(self):
+        self.assertEqual(timing_lines(
+            'temperature_ramp("Au", 320, 10)\n'       # 30 min in the background
+            'temperature_ramp("Sub", 220, 20)\n'      # 10 min, in parallel
+            'hold(15)',
+            temps={"Au": 20, "Sub": 20}),
+            ["Time estimate (start 22:00, compile time):",
+             'line 1: temperature_ramp("Au", 320, 10) — 0 s → ~22:00 · Au ramp 30 min, ends ~22:30',
+             'line 2: temperature_ramp("Sub", 220, 20) — 0 s → ~22:00 · Sub ramp 10 min, ends ~22:10',
+             "line 3: hold(15) — 15 min → ~22:15",
+             "Total: 15 min",
+             "Script ends ~22:15 · last ramp (Au) finishes ~22:30"])
+
+    def test_ramps_finished_before_script_end(self):
+        self.assertEqual(timing_lines('temperature_ramp("Au", 320, 10)\nhold(45)',
+                                      temps={"Au": 20})[-2:],
+                         ["Total: 45 min", "Script ends ~22:45"])
+
+    def test_wait_until_temperature_through_critical_zone(self):
+        # 700 -> 750 at 10 (5 min), 750 -> 800 at 2 (25 min), 800 -> 900 at 10 (10 min)
+        lines = timing_lines(
+            'temperature_ramp("Ga", 900, 10)\n'
+            'wait_until_temperature("Ga", 850, tolerance=0)\n'
+            'wait_until_temperature("Ga", 775)\n'     # already passed: 0 s
+            'hold(10)',
+            temps={"Ga": 700})
+        self.assertEqual(lines[1:],
+            ['line 1: temperature_ramp("Ga", 900, 10) — 0 s → ~22:00 · Ga ramp 40 min, ends ~22:40',
+             'line 2: wait_until_temperature("Ga", 850, tolerance=0) — 35 min → ~22:35',
+             'line 3: wait_until_temperature("Ga", 775) — 0 s → ~22:35',
+             "line 4: hold(10) — 10 min → ~22:45",
+             "Total: 45 min",
+             "Script ends ~22:45"])
+
+    def test_wait_until_temperature_tolerance_and_timeout(self):
+        r = compile_('temperature_ramp("Ga", 900, 10)\n'
+                     'wait_until_temperature("Ga", 780)\n'             # 779.5: 5 + 29.5 / 2 min
+                     'wait_until_temperature("Ga", 890, 0.5, 300)',    # timeout 5 min
+                     temps={"Ga": 700})
+        durations = [s.duration for s in r.timing.steps]
+        self.assertAlmostEqual(durations[1].minutes, 19.75)
+        self.assertEqual(durations[2].format(), "5 min (timeout)")
+
+    def test_wait_until_and_midnight(self):
+        self.assertEqual(timing_lines(
+            'hold(30)\n'
+            'wait_until("2026-09-30 05:00")\n'
+            'hold(90)\n'
+            'wait_until("2026-09-29 23:00")'),        # already past: 0 s
+            ["Time estimate (start 22:00, compile time):",
+             "line 1: hold(30) — 30 min → ~22:30",
+             'line 2: wait_until("2026-09-30 05:00") — 6 h 30 min → ~05:00 (+1 d)',
+             "line 3: hold(90) — 1 h 30 min → ~06:30 (+1 d)",
+             'line 4: wait_until("2026-09-29 23:00") — 0 s → ~06:30 (+1 d)',
+             "Total: 8 h 30 min",
+             "Script ends ~06:30 (+1 d)"])
+
+    def test_ramp_running_past_midnight_after_script_end(self):
+        self.assertEqual(timing_lines('hold(110)\ntemperature_ramp("Au", 320, 10)',
+                                      temps={"Au": 20})[-1],
+                         "Script ends ~23:50 · last ramp (Au) finishes ~00:20 (+1 d)")
+
+    def test_unreadable_temperature(self):
+        self.assertEqual(timing_lines(
+            'temperature_ramp("Au", 300, 10)\n'       # no controller for Au
+            'wait_until_temperature("Au", 300)\n'
+            'hold(10)'),
+            ["Time estimate (start 22:00, compile time):",
+             'line 1: temperature_ramp("Au", 300, 10) — 0 s → ~22:00 '
+             '· Au ramp end unknown (temperature unreadable)',
+             'line 2: wait_until_temperature("Au", 300) — unknown (Au temperature unreadable) '
+             '→ ≥ 22:00',
+             "line 3: hold(10) — 10 min → ≥ 22:10",
+             "Total: ≥ 10 min",
+             "Script ends ≥ 22:10"])
+        self.assertEqual(timing_lines('temperature_ramp("Au", 300, 10)\nhold(5)')[-1],
+                         "Script ends ~22:05 · ramp end unknown: Au")
+
+    def test_new_ramp_while_previous_running_is_unknown(self):
+        lines = timing_lines('temperature_ramp("Au", 320, 10)\nhold(10)\n'
+                             'temperature_ramp("Au", 500, 10)\nwait_until_temperature("Au", 500)',
+                             temps={"Au": 20})
+        self.assertEqual(lines[3:5],
+            ['line 3: temperature_ramp("Au", 500, 10) — 0 s → ~22:10 '
+             '· Au ramp end unknown (previous ramp still running)',
+             'line 4: wait_until_temperature("Au", 500) — unknown '
+             '(Au previous ramp still running) → ≥ 22:10'])
+
+    def test_power_ramp_and_direct_setpoint(self):
+        lines = timing_lines('power_ramp("Sub", 40, 0.05)\n'          # 30 % at 0.05 %/s
+                             'temperature_ramp("Se1", 300, 5)\n'
+                             'hold(5)\n'
+                             'wait_until_temperature("Sub", 100)',
+                             temps={"Se1": 20}, outputs={"Sub": 10})
+        self.assertEqual(lines[1:],
+            ['line 1: power_ramp("Sub", 40, 0.05) — 0 s → ~22:00 '
+             '· Sub power ramp 10 min, ends ~22:10',
+             'line 2: temperature_ramp("Se1", 300, 5) — 0 s → ~22:00 '
+             '· Se1 ramp end unknown (setpoint written directly, no ramp rate)',
+             "line 3: hold(5) — 5 min → ~22:05",
+             'line 4: wait_until_temperature("Sub", 100) — unknown '
+             '(Sub temperature unknown after power_ramp) → ≥ 22:05',
+             "Total: ≥ 5 min",
+             "Script ends ≥ 22:05 · last ramp (Sub) finishes ~22:10 · ramp end unknown: Se1"])
+
+    def test_other_duration_sources_fill_unknown_steps(self):
+        source = lambda ctx, step: script_compiler.Duration(20, "user estimate")
+        script_compiler.DURATION_SOURCES.append(source)
+        try:
+            lines = timing_lines('wait_until_temperature("Au", 300)\nhold(10)')
+        finally:
+            script_compiler.DURATION_SOURCES.remove(source)
+        self.assertEqual(lines[1:4],
+                         ['line 1: wait_until_temperature("Au", 300) — 20 min (user estimate) → ~22:20',
+                          "line 2: hold(10) — 10 min → ~22:30",
+                          "Total: 30 min"])
+
+    def test_no_time_estimate_when_errors(self):
+        self.assertIsNone(compile_('hodl(1)').timing)
 
     def test_crashing_check_blocks_run(self):
         def broken(ctx):
