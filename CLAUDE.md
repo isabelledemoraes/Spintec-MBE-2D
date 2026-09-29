@@ -38,6 +38,7 @@ Simulation mode: `SIMULATION = True` in `GUIv5.py` — uses `SimEurothermControl
 | `base_instrument.py` | ABC: `connect`, `disconnect`, `read_value` |
 | `GUIv5.py` | `MainWindow` + `InstrumentPanel`; creates controllers, workers, threads; handles close |
 | `script_editor_integration.py` | `ScriptEditor` + `ScriptManager`; DSL execution engine |
+| `script_compiler.py` | Compile step: `compile_script()` runs every check in `CHECKS` → `CompileReport` (ERROR/WARNING) |
 | `data_updater_threaded.py` | `EurothermWorker` (2 s poll) + `PressureWorker` (1 s poll) via `QThread` |
 | `log_manager.py` | CSV logger; Standby mode (60 s interval, daily file) / Growth mode (5 s interval, named file) |
 | `checkpoint_manager.py` | JSON checkpoint written before each script statement; survives crashes |
@@ -77,6 +78,12 @@ another script, the run aborts. Locks are released in a `finally` block at end o
 **Checkpoint recovery**: `checkpoint_manager.save(name, text, stmt_index)` is called before each
 statement. On next launch after a crash, `watchdog.py` keeps GUIv5 alive and a resume dialog
 (if implemented) can set `_resume_from` on the ScriptEditor.
+
+**Compile before Run** (issue #4): the Compile button runs `script_compiler.compile_script()`.
+Each check is a function `(CompileContext) -> list[CompileMessage(level, line, text)]` registered in
+`CHECKS`; limits must come from `ctx.addresses`. The per-tab report panel lists errors, then warnings,
+then the summary line. Run is enabled only if the last report has 0 errors AND its `code` equals the
+current editor text; `run_script()` re-checks this. Editing the text marks the report outdated.
 
 **Tab close protection**: `ScriptManager.close_tab` silently blocks if `editor.is_active()`.
 
@@ -119,6 +126,7 @@ QThread → EurothermWorker.run() → data_ready signal
 <!-- Update this section at the end of each session -->
 - Script close prevention: tab close blocked while script active ✅
 - Instrument lock UI (🔒 icon + grey out): `set_locked()` on InstrumentPanel ✅
+- Compile framework (#4): Check + preview graph removed, Compile + per-tab report added ✅; next: #5–#9 plug into `CHECKS`
 - Completion blocking (block script until all ramp segments physically done): IN PROGRESS
 - `wait_until("YYYY-MM-DD HH:MM")` DSL function: blocks script until target datetime, with countdown status label and stop-event support ✅
 - NI DAQ USB-6501 output init: `initialize_daq_outputs()` added to `shutter_controller.py`, called first in `GUIv5.py __main__` — sets all 24 lines LOW before any task is created ✅

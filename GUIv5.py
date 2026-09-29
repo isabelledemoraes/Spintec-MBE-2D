@@ -365,7 +365,7 @@ class MainWindow(QMainWindow):
                 editor._resume_from = stmt_idx
                 self.append_log(
                     f"[Recovery] Script '{script_name}' restored. "
-                    f"Click Run to resume from statement {stmt_idx + 1}."
+                    f"Compile, then click Run to resume from statement {stmt_idx + 1}."
                 )
                 self.tabs.setCurrentWidget(self.script_tab)
         else:
