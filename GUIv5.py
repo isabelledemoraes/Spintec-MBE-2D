@@ -17,6 +17,7 @@ from eurotherm_controller import EurothermController
 from addresses import addresses
 from log_manager import LogManager
 from shutter_controller import ShutterController, initialize_daq_outputs
+from pressure_interlock import InterlockError, bypassed_shutters
 from pressure_gauge_panel import PressureGaugePanel
 from pressure_gauge_controller import PressureGaugeController
 from data_updater_threaded import EurothermWorker, PressureWorker
@@ -151,7 +152,14 @@ class InstrumentPanel(QFrame):
     def toggle_shutter(self):
         requested = self.shutter_btn.isChecked()
         if USE_SHUTTER_HARDWARE and self.shutter_ctrl and self.shutter_line:
-            if not self.shutter_ctrl.set_shutter(self.name, self.shutter_line, requested):
+            try:
+                ok = self.shutter_ctrl.set_shutter(self.name, self.shutter_line, requested)
+            except InterlockError as e:
+                self.shutter_btn.setChecked(self.shutter_state)
+                print(f"[{self.name}] Shutter not opened: {e}")
+                QMessageBox.warning(self, "Pressure interlock", f"{self.name} not opened: {e}")
+                return
+            if not ok:
                 # Write failed: keep showing the previous (real) state.
                 self.shutter_btn.setChecked(self.shutter_state)
                 print(f"[{self.name}] Shutter write failed; state unchanged ({self.shutter_state})")
@@ -292,6 +300,8 @@ class MainWindow(QMainWindow):
                 pg_ctrl = SimPressureGaugeController("Pressure") if SIMULATION else PressureGaugeController("Pressure")
                 pg_ctrl.connect()
                 pressure_panel = PressureGaugePanel("Pressure", pg_ctrl)
+                # Pressure interlock (#8): without this, interlocked shutters stay closed.
+                self.shutter_ctrl.pressure_gauge = pg_ctrl
             except Exception as e:
                 self.append_log(f"[Pressure] Controller init failed: {e}")
                 pressure_panel = PressureGaugePanel("Pressure", None)
@@ -308,6 +318,10 @@ class MainWindow(QMainWindow):
 
         self.global_shutter_buttons = {}
         self.add_global_shutter_panel()
+
+        for sid in bypassed_shutters(addresses):
+            self.append_log(f"[Shutter] WARNING: pressure interlock BYPASSED in addresses.py "
+                            f"for {sid}: it opens without pressure check.")
 
         self.threads = []
         for panel in self.instrument_panels:
@@ -492,7 +506,16 @@ class MainWindow(QMainWindow):
         print(f"[Global Shutter] {shutter_id} → {state} (line: {line_name})")
 
         if USE_SHUTTER_HARDWARE and self.shutter_ctrl and line_name:
-            if not self.shutter_ctrl.set_shutter(shutter_id, line_name, state):
+            try:
+                ok = self.shutter_ctrl.set_shutter(shutter_id, line_name, state)
+            except InterlockError as e:
+                # Opening refused, nothing written: shutter stays closed.
+                button.setChecked(False)
+                self.update_global_shutter_style(button, label_prefix, False)
+                self.append_log(f"[Shutter] {shutter_id} not opened: {e}")
+                QMessageBox.warning(self, "Pressure interlock", f"{shutter_id} not opened: {e}")
+                return
+            if not ok:
                 # Write failed: revert the button to the previous (real) state.
                 state = not state
                 button.setChecked(state)

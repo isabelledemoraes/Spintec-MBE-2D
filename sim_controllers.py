@@ -84,11 +84,12 @@ class SimEurothermController:
 
 
 class SimPressureGaugeController:
-    """Simulates a PressureGaugeController, always returning a fixed Torr value."""
+    """Simulates a PressureGaugeController, returning self.pressure (mbar)."""
 
     def __init__(self, loop_id: str):
         self.loop_id = loop_id
         self.connected = False
+        self.pressure = 1.5e-9  # mbar; change it to test the Liquid_N2 interlock
 
     def connect(self):
         self.connected = True
@@ -97,4 +98,4 @@ class SimPressureGaugeController:
         self.connected = False
 
     def read_value(self, name: str):
-        return 1.5e-9  # simulated Torr
+        return self.pressure

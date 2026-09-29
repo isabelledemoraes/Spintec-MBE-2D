@@ -2,6 +2,8 @@ import json
 import os
 import threading
 
+from pressure_interlock import interlock_for_line, check_pressure, is_bypassed
+
 STATE_FILE = "shutter_state.json"
 
 try:
@@ -41,10 +43,16 @@ class ShutterController:
     Single shared instance (created by MainWindow) used by both the GUI buttons
     and the script engine, so the General View always reflects the real state.
     """
-    def __init__(self):
+    def __init__(self, pressure_gauge=None, addresses_map=None):
         # Guards self.state, the JSON file and DAQ writes (GUI + script threads).
         self._lock = threading.Lock()
         self.state = self._load_state()
+        # Gauge read by the pressure interlock (issue #8). None = interlocked
+        # shutters cannot be opened. Set by MainWindow once the gauge exists.
+        self.pressure_gauge = pressure_gauge
+        if addresses_map is None:
+            from addresses import addresses as addresses_map
+        self.addresses = addresses_map
 
     def _load_state(self):
         if os.path.exists(STATE_FILE):
@@ -57,7 +65,12 @@ class ShutterController:
             json.dump(self.state, f)
 
     def set_shutter(self, loop_id, line_name, state: bool) -> bool:
-        """Write the shutter line. Returns True on success; state is only updated on success."""
+        """
+        Write the shutter line. Returns True on success; state is only updated on success.
+        Raises InterlockError (nothing written) when the pressure interlock refuses to open.
+        """
+        if state:
+            self._check_interlock(loop_id, line_name)
         with self._lock:
             if nidaqmx is None:
                 print("[Shutter] NI-DAQ not available; simulated state only.")
@@ -76,6 +89,18 @@ class ShutterController:
             except Exception as e:
                 print(f"[Shutter] ERROR writing to {line_name}: {e}")
                 return False
+
+    def _check_interlock(self, loop_id, line_name):
+        """Every opening of an interlocked line, from the GUI or a script, passes here."""
+        config = interlock_for_line(self.addresses, line_name)
+        if config is None:
+            return
+        if is_bypassed(config):
+            print(f"[Shutter] WARNING: pressure interlock BYPASSED (addresses.py) — "
+                  f"{loop_id} opened without pressure check")
+            return
+        pressure = check_pressure(self.pressure_gauge, self.addresses, config)
+        print(f"[Shutter] Pressure interlock OK for {loop_id}: {pressure:.1e} mbar")
 
     def get_state(self, loop_id) -> bool:
         with self._lock:

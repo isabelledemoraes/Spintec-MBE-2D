@@ -3,7 +3,7 @@ import time
 import io
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton,
-    QPlainTextEdit, QTextEdit, QHBoxLayout, QTabWidget, QDialog, QFileDialog
+    QPlainTextEdit, QTextEdit, QHBoxLayout, QTabWidget, QDialog, QFileDialog, QMessageBox
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor, QFont
@@ -18,6 +18,7 @@ import checkpoint_manager
 from addresses import addresses
 from script_compiler import compile_script, Level
 from ramp_planning import plan_ramp_segments
+from pressure_interlock import InterlockError
 
 
 def _loop_flag(loop_id, key):
@@ -94,6 +95,8 @@ class ScriptEditor(QWidget):
     _stmt_highlight = pyqtSignal(int, int)
     # Emitted to update the hardware-wait status label ("" to clear).
     _hw_status = pyqtSignal(str)
+    # Emitted when the pressure interlock stops the script (message to show).
+    _interlock_alert = pyqtSignal(str)
 
     def __init__(self, script_name, log_callback, controllers=None, shutter_ctrl=None,
                  open_script_callback=None):
@@ -144,6 +147,7 @@ class ScriptEditor(QWidget):
         self._stmt_highlight.connect(self._apply_statement_colors)
         self._hw_label = QLabel("")
         self._hw_status.connect(self._hw_label.setText)
+        self._interlock_alert.connect(self._show_interlock_alert)
 
         # Per-tab compilation state and report panel.
         self._last_report = None      # CompileReport of the last compilation
@@ -703,7 +707,17 @@ class ScriptEditor(QWidget):
                     checkpoint_manager.save(self.script_name, code, i)
 
                     mod = ast.Module(body=[node], type_ignores=[])
-                    exec(compile(mod, "<script>", "exec"), ns, ns)
+                    try:
+                        exec(compile(mod, "<script>", "exec"), ns, ns)
+                    except InterlockError as e:
+                        # Shutter not opened. Deliberate stop, not a crash: set
+                        # stop_event (also stops background ramp segments) and
+                        # fall through to the checkpoint clear below.
+                        self.stop_event.set()
+                        msg = f"Script stopped at line {node.lineno}: {e}"
+                        self.log_callback(f"[{self.script_name}] {msg}")
+                        self._interlock_alert.emit(msg)
+                        break
 
                     if self.stop_event.is_set():
                         self.log_callback(
@@ -756,6 +770,9 @@ class ScriptEditor(QWidget):
         self.log_callback(f"[{self.script_name}] Running script...")
         self.thread = threading.Thread(target=runner)
         self.thread.start()
+
+    def _show_interlock_alert(self, msg: str):
+        QMessageBox.warning(self, f"{self.script_name}: pressure interlock", msg)
 
     # ── Editor highlight helpers (always called on the main thread via signal) ──
 
@@ -847,7 +864,7 @@ class ScriptEditor(QWidget):
             self._show_report(self._last_report, outdated)
 
     def _show_report(self, report, outdated: bool):
-        colors = {Level.ERROR: "#c00000", Level.WARNING: "#c05a00"}
+        colors = {Level.ERROR: "#c00000", Level.WARNING: "#c05a00", Level.INFO: "#1f4e9c"}
         html = []
         if outdated:
             html.append("<b>⚠ Report outdated: script modified since last compilation. "
