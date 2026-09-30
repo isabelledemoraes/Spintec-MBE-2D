@@ -3,8 +3,9 @@
 ## What this project is
 A PyQt6 desktop GUI (`GUIv5.py`) for controlling an MBE (Molecular Beam Epitaxy) deposition system.
 It talks to Eurotherm temperature controllers via Modbus/RS-485, NI-DAQ digital outputs for shutters,
-and a serial pressure gauge. There is also a Plotly Dash live dashboard (`visu_server.py`) launched
-as a subprocess.
+and a serial pressure gauge. There is also a live dashboard (`visu_window.py`, pywebview + Plotly)
+launched as a subprocess; `visu_server.py` is an older standalone Plotly Dash version (not launched
+by the GUI, not kept in sync).
 
 Entry points:
 - `watchdog.py` — **preferred launcher** (restarts on crash; no script resume, the checkpoint is a crash record)
@@ -43,8 +44,8 @@ Simulation mode: `SIMULATION = True` in `GUIv5.py` — uses `SimEurothermControl
 | `data_updater_threaded.py` | `EurothermWorker` (2 s poll) + `PressureWorker` (1 s poll) via `QThread` |
 | `log_manager.py` | CSV logger; Standby mode (60 s interval, daily file) / Growth mode (5 s interval, named file) |
 | `checkpoint_manager.py` | JSON crash record written before each script statement; `crash_message()` for the startup banner |
-| `visu_server.py` | Plotly Dash dashboard; reads CSV logs; auto-refreshes every 5 s |
-| `visu_window.py` | Launched as subprocess by "📊 Dashboard" button |
+| `visu_server.py` | Older standalone Plotly Dash dashboard (manual launch only) |
+| `visu_window.py` | Dashboard launched as subprocess by "📊 Dashboard" button; reads CSV logs; refreshes every 5 s; instruments have a Select all / Deselect all toggle; Pressure is not an instrument, it has its own plot ("Show" line) |
 | `watchdog.py` | Crash-restart wrapper; exit code 0 = clean quit |
 
 ## Script DSL (script_editor_integration.py)
@@ -167,8 +168,8 @@ QThread → EurothermWorker.run() → data_ready signal
                           LogManager.log(latest_data)
                                     ↓
                           CSV file (logs/)
-                                    ↓ (Dash polls every 5 s)
-                          visu_server.py dashboard
+                                    ↓ (dashboard polls every 5 s)
+                          visu_window.py dashboard
 ```
 
 ## Known patterns / conventions
@@ -205,6 +206,9 @@ QThread → EurothermWorker.run() → data_ready signal
 - Auto-resume removed (#10): "Session Recovery" dialog, `_resume_from`, `resume_from` in
   `script_archive` gone; crash banner in General View instead ✅. Open: a script *exception* (not a
   crash) also keeps the checkpoint, so the next start reports it as "ended unexpectedly"
+- UI cleanup (#11): dashboard Select/Deselect all toggle + Pressure out of the instrument line
+  (`visu_window.py` only); Script page "Follow-Up Plot" button removed with its `hold()` data
+  collection ✅
 - Pressure gauge: simulated OK; real COM10 not yet tested end-to-end
 - `gui_main.py` uses a relative import `.GUIv5` — will fail if run directly; use `watchdog.py`
 

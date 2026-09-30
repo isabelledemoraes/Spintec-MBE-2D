@@ -3,18 +3,15 @@ import time
 import io
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton,
-    QPlainTextEdit, QTextEdit, QHBoxLayout, QTabWidget, QDialog, QFileDialog, QMessageBox,
+    QPlainTextEdit, QTextEdit, QHBoxLayout, QTabWidget, QFileDialog, QMessageBox,
     QInputDialog
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor, QFont
 from datetime import datetime, timedelta
-import pyqtgraph as pg
-import numpy as np
 import os
 import ast
 from html import escape
-from collections import deque
 import checkpoint_manager
 import script_archive
 import addresses as addresses_config   # module-level settings (MACHINE_NAME, SCRIPT_ARCHIVE_DIR)
@@ -128,8 +125,6 @@ class ScriptEditor(QWidget):
         self.shutter_ctrl = shutter_ctrl
         self.thread = None
         self.stop_event = threading.Event()
-        self.live_plot_data = deque(maxlen=3600)  # rolling 1-hour window at 1 Hz
-        self.start_time = None
         self._hw_wait_items = []  # [(loop_id, finish_datetime), ...] populated by temperature_ramp
 
         self.editor = QPlainTextEdit()
@@ -146,19 +141,12 @@ class ScriptEditor(QWidget):
         self.stop_button = QPushButton("Stop")
         self.stop_button.clicked.connect(self.stop_script)
 
-        self.follow_up_btn = QPushButton("Follow-Up Plot")
-        self.follow_up_btn.clicked.connect(self.show_live_plot)
-
         self.save_button = QPushButton("💾 Save Script")
         self.save_button.clicked.connect(self.save_script)
 
         self.load_button = QPushButton("📂 Load Script")
         self.load_button.clicked.connect(self.load_script)
 
-        self.plot_dialog = None
-        self.live_timer = None
-        self.temp_curve = None
-        self.power_curve = None
         self._stmt_ranges = []   # [(start_line_0based, end_line_0based), ...]
         self._stmt_highlight.connect(self._apply_statement_colors)
         self._hw_label = QLabel("")
@@ -177,7 +165,6 @@ class ScriptEditor(QWidget):
         btn_layout.addWidget(self.compile_button)
         btn_layout.addWidget(self.run_button)
         btn_layout.addWidget(self.stop_button)
-        btn_layout.addWidget(self.follow_up_btn)
         btn_layout.addWidget(self.save_button)
         btn_layout.addWidget(self.load_button)
 
@@ -226,9 +213,7 @@ class ScriptEditor(QWidget):
             return
 
         self.stop_event.clear()
-        self.live_plot_data = deque(maxlen=3600)
         self._hw_wait_items = []
-        self.start_time = time.time()
 
         # Parse statement line ranges for the colour highlighter (0-based).
         try:
@@ -556,19 +541,6 @@ class ScriptEditor(QWidget):
                     if self.stop_event.is_set():
                         self.log_callback("Hold interrupted.")
                         return
-                    current_time = (time.time() - self.start_time) / 60
-                    # Collect one data point per second for the Follow-Up Plot.
-                    # Poll every Eurotherm controller that is active.
-                    for lid, ctrl in self.shared_controllers.items():
-                        try:
-                            meas_power = ctrl.read_value(lid, "output_pv")
-                            meas_temp  = ctrl.read_value(lid, "temperature_pv")
-                            self.live_plot_data.append(
-                                (current_time, 0, meas_power, meas_temp)
-                            )
-                            break   # one instrument per tick is enough for the plot
-                        except Exception:
-                            continue
                     time.sleep(1)
 
             def wait_until(datetime_str: str):
@@ -999,70 +971,6 @@ class ScriptEditor(QWidget):
                 self.editor.setPlainText(content)
                 self.editor.setFocus()
                 self.log_callback(f"[{self.script_name}] Script loaded from {filepath}")
-
-    def show_live_plot(self):
-        if not self.live_plot_data:
-            self.log_callback("No live data to show.")
-            return
-
-        if hasattr(self, 'live_timer') and self.live_timer:
-            self.live_timer.stop()
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Live Script Follow-Up")
-        layout = QVBoxLayout()
-        pw = pg.PlotWidget()
-        pw.setLabel('bottom', 'Time', units='min')
-        pw.showGrid(x=True, y=True)
-
-        self.temp_curve = pw.plot(pen='r', name="Measured Temp")
-        p2 = pg.ViewBox()
-        pw.showAxis('right')
-        pw.scene().addItem(p2)
-        pw.getAxis('right').linkToView(p2)
-        p2.setXLink(pw)
-
-        self.power_curve = pg.PlotCurveItem(pen='b')
-        p2.addItem(self.power_curve)
-        pw.getAxis('right').setLabel('Power (%)')
-
-        def sync():
-            p2.setGeometry(pw.getViewBox().sceneBoundingRect())
-            p2.linkedViewChanged(pw.getViewBox(), p2.XAxis)
-
-        pw.getViewBox().sigResized.connect(sync)
-
-        def update_live_plot():
-            if not self.live_plot_data:
-                return
-            if self.temp_curve is None or self.power_curve is None:
-                return
-            data = [d for d in self.live_plot_data if None not in d]
-            if not data:
-                return
-            times, _, meas_power, meas_temp = zip(*data)
-            times = np.array(times)
-            meas_power = np.array(meas_power)
-            meas_temp = np.array(meas_temp)
-            self.temp_curve.setData(x=times, y=meas_temp)
-            self.power_curve.setData(x=times, y=meas_power)
-
-        self.live_timer = QTimer()
-        self.live_timer.timeout.connect(update_live_plot)
-        self.live_timer.start(1000)
-
-        def on_close():
-            if self.live_timer:
-                self.live_timer.stop()
-                self.live_timer = None
-            self.temp_curve = None
-            self.power_curve = None
-
-        dialog.finished.connect(on_close)
-        layout.addWidget(pw)
-        dialog.setLayout(layout)
-        dialog.resize(700, 400)
-        dialog.exec()
 
 
 class ScriptManager(QWidget):
