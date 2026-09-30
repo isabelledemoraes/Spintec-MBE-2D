@@ -224,6 +224,25 @@ class MainWindow(QMainWindow):
         self.general_tab = QWidget()
         self.tabs.addTab(self.general_tab, "General View")
         _gen_outer = QVBoxLayout(self.general_tab)
+
+        # Crash banner (issue #10): hidden unless the previous session crashed
+        # during a script; stays until acknowledged. See _report_previous_crash.
+        self._crash_banner = QFrame()
+        self._crash_banner.setStyleSheet(
+            "QFrame { background-color: #fff3cd; border: 1px solid #e0a800; }"
+            "QLabel { color: #664d03; font-weight: bold; border: none; }"
+        )
+        _banner_layout = QHBoxLayout(self._crash_banner)
+        self._crash_label = QLabel()
+        self._crash_label.setWordWrap(True)
+        self._crash_label.setTextFormat(Qt.TextFormat.PlainText)   # script name shown as is
+        _banner_layout.addWidget(self._crash_label, 1)
+        _ack_btn = QPushButton("Acknowledge")
+        _ack_btn.clicked.connect(self._acknowledge_crash)
+        _banner_layout.addWidget(_ack_btn)
+        self._crash_banner.hide()
+        _gen_outer.addWidget(self._crash_banner)
+
         _gen_scroll = QScrollArea()
         _gen_scroll.setWidgetResizable(True)
         _gen_content = QWidget()
@@ -342,50 +361,32 @@ class MainWindow(QMainWindow):
                 self.threads.append((thread, worker))
                 thread.start()
 
-        # Offer to resume a script that was interrupted by a crash
-        self._check_resume_checkpoint()
+        # Report a script that was interrupted by a crash (no resume)
+        self._report_previous_crash()
 
         # Feature 3: poll active_script_locks every second to update lock icons.
         self._lock_poll_timer = QTimer(self)
         self._lock_poll_timer.timeout.connect(self._update_instrument_locks)
         self._lock_poll_timer.start(1000)
 
-    def _check_resume_checkpoint(self):
+    def _report_previous_crash(self):
+        """
+        A checkpoint left at startup means a script was running when the app
+        crashed. Log it, clear the checkpoint (the log is the permanent record)
+        and show a banner in the General View until acknowledged. No resume.
+        """
         cp = checkpoint_manager.load()
         if cp is None:
             return
+        message = checkpoint_manager.crash_message(cp)
+        self.append_log(f"[Recovery] {message}")
+        checkpoint_manager.clear()
+        self._crash_label.setText(message)
+        self._crash_banner.show()
 
-        stmt_idx   = cp.get("stmt_index", 0)
-        script_name = cp.get("script_name", "Script")
-        script_text = cp.get("script_text", "")
-
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Session Recovery")
-        msg.setIcon(QMessageBox.Icon.Warning)
-        msg.setText(
-            f"The previous session crashed while running <b>{script_name}</b> "
-            f"(at statement {stmt_idx + 1}).<br><br>"
-            "Resume from that statement?"
-        )
-        msg.setStandardButtons(
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        msg.setDefaultButton(QMessageBox.StandardButton.Yes)
-
-        if msg.exec() == QMessageBox.StandardButton.Yes:
-            editor = self.script_tab.tabs.widget(0)
-            if editor is not None:
-                editor.editor.setPlainText(script_text)
-                editor.set_name(script_name)   # same name as the crashed run (locks, archive)
-                editor._resume_from = stmt_idx
-                self.append_log(
-                    f"[Recovery] Script '{script_name}' restored. "
-                    f"Compile, then click Run to resume from statement {stmt_idx + 1}."
-                )
-                self.tabs.setCurrentWidget(self.script_tab)
-        else:
-            checkpoint_manager.clear()
-            self.append_log("[Recovery] Checkpoint discarded.")
+    def _acknowledge_crash(self):
+        self._crash_banner.hide()
+        self.append_log("[Recovery] Crash message acknowledged.")
 
     def _update_instrument_locks(self):
         """
@@ -591,7 +592,7 @@ class MainWindow(QMainWindow):
         # 0) Gracefully stop any running scripts so their threads can exit
         #    and checkpoint_manager.clear() is reached (no checkpoint = clean quit).
         #    If Python is killed hard (crash), this block never runs,
-        #    the checkpoint survives, and the watchdog will offer recovery.
+        #    the checkpoint survives, and the next start reports the crash.
         script_mgr = getattr(self, "script_tab", None)
         if script_mgr:
             for i in range(script_mgr.tabs.count()):

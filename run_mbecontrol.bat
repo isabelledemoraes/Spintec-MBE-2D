@@ -7,5 +7,5 @@ cd /d "%~dp0"
 REM Activate virtual environment
 call venv\Scripts\activate
 
-REM Run via watchdog — auto-restarts on crash and offers script resume
+REM Run via watchdog — auto-restarts on crash and reports the interrupted script
 python watchdog.py

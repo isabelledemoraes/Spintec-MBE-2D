@@ -6,6 +6,15 @@ Format: `[version] — date — description`
 
 ---
 
+## [Unreleased]
+
+### Removed
+- **Script resume after a crash** (#10) — the "Session Recovery" dialog is gone. After a crash
+  during a script, the General View shows which script and statement were interrupted until
+  acknowledged; the event is logged. The script is not reloaded or resumed.
+
+---
+
 ## [0.4.0] — 2026-02-20
 
 ### Added

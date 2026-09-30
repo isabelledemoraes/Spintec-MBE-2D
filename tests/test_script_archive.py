@@ -59,12 +59,6 @@ class ArchiveTests(unittest.TestCase):
         self.assertIn("Script file:      2026-09-28_14-32-05_growth_A.txt", report)
         self.assertIn("Compiled at 2026-09-28 14:32:04", report)
         self.assertEqual(report[-2:], FakeReport().format_lines())
-        self.assertFalse(any("Resumed" in line for line in report))
-
-    def test_resume_is_written_in_header(self):
-        _, report_path = self.save(resume_from=2)
-        with open(report_path, encoding="utf-8") as f:
-            self.assertIn("Resumed from statement 3", f.read())
 
     def test_two_runs_same_second_never_overwrite(self):
         first = self.save()

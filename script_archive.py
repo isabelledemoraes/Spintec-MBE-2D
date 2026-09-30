@@ -77,8 +77,7 @@ def archive_settings(config) -> tuple[str, str]:
     return machine.strip(), os.path.normpath(folder)
 
 
-def format_report(report, *, machine, run_at, version, script_name, script_file,
-                  resume_from=0) -> str:
+def format_report(report, *, machine, run_at, version, script_name, script_file) -> str:
     """Report file text: header, then the compile report as shown in the GUI."""
     lines = [
         "MBE Control - script run report",
@@ -88,9 +87,6 @@ def format_report(report, *, machine, run_at, version, script_name, script_file,
         f"Script name:      {script_name}",
         f"Script file:      {script_file}",
     ]
-    if resume_from:
-        lines.append(f"Resumed from statement {resume_from + 1} "
-                     f"(statements before it already ran before a crash)")
     lines.append("-" * 60)
     lines.append(f"Compiled at {report.compiled_at:%Y-%m-%d %H:%M:%S}")
     lines.extend(report.format_lines())
@@ -118,7 +114,7 @@ def _remove_quietly(path: str):
 
 
 def save_run(code: str, report, script_name: str, config, *, now: datetime | None = None,
-             version: str = SOFTWARE_VERSION, resume_from: int = 0) -> tuple[str, str]:
+             version: str = SOFTWARE_VERSION) -> tuple[str, str]:
     """
     Save the executed `code` and its compile `report` with one timestamp.
     Returns (script_path, report_path); raises ArchiveError on any failure.
@@ -147,8 +143,7 @@ def save_run(code: str, report, script_name: str, config, *, now: datetime | Non
         break
 
     text = format_report(report, machine=machine, run_at=now, version=version,
-                         script_name=script_name, script_file=os.path.basename(script_path),
-                         resume_from=resume_from)
+                         script_name=script_name, script_file=os.path.basename(script_path))
     try:
         _write_new(report_path, text)
     except OSError as e:

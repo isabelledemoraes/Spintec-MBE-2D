@@ -130,7 +130,6 @@ class ScriptEditor(QWidget):
         self.stop_event = threading.Event()
         self.live_plot_data = deque(maxlen=3600)  # rolling 1-hour window at 1 Hz
         self.start_time = None
-        self._resume_from = 0   # set by recovery dialog; reset after each run
         self._hw_wait_items = []  # [(loop_id, finish_datetime), ...] populated by temperature_ramp
 
         self.editor = QPlainTextEdit()
@@ -721,32 +720,16 @@ class ScriptEditor(QWidget):
             }
 
             # ── Statement-by-statement execution with checkpoint ──────────
-            resume_from = self._resume_from
-            self._resume_from = 0          # reset for next run
-
             try:
                 tree = ast.parse(code)
                 stmts = tree.body
 
-                if resume_from:
-                    self.log_callback(
-                        f"[{self.script_name}] Resuming from statement "
-                        f"{resume_from + 1}/{len(stmts)}."
-                    )
-
                 for i, node in enumerate(stmts):
-                    if i < resume_from:
-                        self.log_callback(
-                            f"[{self.script_name}] [skip] Statement {i + 1} "
-                            f"(already ran before crash)."
-                        )
-                        continue
-
                     # Highlight current statement before executing.
                     self._stmt_highlight.emit(i, len(stmts))
 
-                    # Write checkpoint BEFORE executing — survives a crash
-                    checkpoint_manager.save(self.script_name, code, i)
+                    # Write checkpoint BEFORE executing — survives a crash (crash record only)
+                    checkpoint_manager.save(self.script_name, i, len(stmts))
 
                     mod = ast.Module(body=[node], type_ignores=[])
                     try:
@@ -791,8 +774,8 @@ class ScriptEditor(QWidget):
 
             except Exception as e:
                 self.log_callback(f"[{self.script_name}] Error: {e}")
-                # Checkpoint is intentionally kept so the watchdog restart
-                # can offer a resume dialog.
+                # Checkpoint is intentionally kept: after the watchdog restart
+                # the GUI reports which script was running (no resume).
             finally:
                 # --- RELEASE LOCKS ---
                 with lock_manager_lock:
@@ -817,8 +800,7 @@ class ScriptEditor(QWidget):
         """Save the exact script and its compile report; False (and a message) blocks Run."""
         try:
             script_path, report_path = script_archive.save_run(
-                code, self._last_report, self.script_name, addresses_config,
-                resume_from=self._resume_from)
+                code, self._last_report, self.script_name, addresses_config)
         except Exception as e:
             reason = str(e) if isinstance(e, script_archive.ArchiveError) \
                 else f"unexpected error: {e!r}"

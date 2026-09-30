@@ -8,8 +8,9 @@ Launch this instead of GUIv5.py:
 Behaviour:
   - Exit code 0  → user closed the app normally; watchdog exits too.
   - Any other code → app crashed; watchdog waits RESTART_DELAY seconds
-    and relaunches.  The checkpoint written by checkpoint_manager.py
-    lets the GUI offer a resume dialog on the next start.
+    and relaunches.  If a script was running, the checkpoint written by
+    checkpoint_manager.py lets the GUI report it on the next start
+    (crash record only: the script is not resumed).
 """
 import subprocess
 import sys
