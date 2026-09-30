@@ -25,6 +25,16 @@
 # If this line is missing, GUIv5.py falls back to True.
 SIMULATION = False
 
+# ── Machine identity and run archive (issue #9) ──────────────────────────────
+# At each Run, the exact script text and its compile report are saved in
+# SCRIPT_ARCHIVE_DIR before execution starts (created if missing):
+#   YYYY-MM-DD_HH-MM-SS_<script>.txt and YYYY-MM-DD_HH-MM-SS_<script>_report.txt
+# MACHINE_NAME is written in the report header. If either is missing/None, or if
+# the files cannot be written, the script does NOT start.
+# A relative folder is relative to the MBEControl folder.
+MACHINE_NAME = None  # ← SET, e.g. "mbe1"
+SCRIPT_ARCHIVE_DIR = None  # ← SET, e.g. r"D:\MBE\run_archive"
+
 # ── Optional per-loop script options (Eurotherm loops only, default False) ───
 #   "script_direct_setpoint": True
 #       temperature_ramp() in scripts just writes the setpoint, like the GUI

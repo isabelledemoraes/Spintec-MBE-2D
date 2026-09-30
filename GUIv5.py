@@ -376,6 +376,7 @@ class MainWindow(QMainWindow):
             editor = self.script_tab.tabs.widget(0)
             if editor is not None:
                 editor.editor.setPlainText(script_text)
+                editor.set_name(script_name)   # same name as the crashed run (locks, archive)
                 editor._resume_from = stmt_idx
                 self.append_log(
                     f"[Recovery] Script '{script_name}' restored. "

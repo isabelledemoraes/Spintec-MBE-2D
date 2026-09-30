@@ -39,6 +39,7 @@ Simulation mode: `SIMULATION = True` in `GUIv5.py` — uses `SimEurothermControl
 | `GUIv5.py` | `MainWindow` + `InstrumentPanel`; creates controllers, workers, threads; handles close |
 | `script_editor_integration.py` | `ScriptEditor` + `ScriptManager`; DSL execution engine |
 | `script_compiler.py` | Compile step: `compile_script()` runs every check in `CHECKS` → `CompileReport` (ERROR/WARNING) |
+| `script_archive.py` | Run archive (#9): `save_run()` writes script + compile report before execution; `ArchiveError` blocks Run |
 | `data_updater_threaded.py` | `EurothermWorker` (2 s poll) + `PressureWorker` (1 s poll) via `QThread` |
 | `log_manager.py` | CSV logger; Standby mode (60 s interval, daily file) / Growth mode (5 s interval, named file) |
 | `checkpoint_manager.py` | JSON checkpoint written before each script statement; survives crashes |
@@ -120,7 +121,25 @@ aliases are covered), so scripts AND manual buttons pass through it; refusal rai
 Bypass: `"bypass": True` in the same dict (only literal `True`) opens with no pressure check —
 Compile WARNING per opening, startup log line, console warning at each bypassed opening.
 
+**Run archive** (#9): `run_script()` recompiles the current text (`compile_current()`); errors → Run
+refused, nothing saved. Then `_archive_run()` → `script_archive.save_run()` writes
+`YYYY-MM-DD_HH-MM-SS_<name>.txt` (exact executed text, UTF-8, `newline=""`) and `…_<name>_report.txt`
+(header: machine, Run time, git version, script name/file, resume statement; then `format_lines()`)
+in `SCRIPT_ARCHIVE_DIR`, BEFORE locks/thread. Settings are top-level in `addresses.py`: `MACHINE_NAME`,
+`SCRIPT_ARCHIVE_DIR` (relative = project folder, created if missing); missing/None/empty or any write
+error → `ArchiveError` → script NOT started + message box. Files opened in `"x"` mode (never overwrite;
+same name + same second → `_2`, `_3` on both); script file removed if the report fails. Name =
+`safe_filename(script_name)` (tab name, `Script N` for new tabs, `untitled` if empty). Version =
+`git rev-parse --short HEAD` (+`-dirty`) read once at import, else `unknown`. Tests that press Run
+must patch `script_editor_integration.addresses_config` to a temp folder.
+
 **Tab close protection**: `ScriptManager.close_tab` silently blocks if `editor.is_active()`.
+
+**Script names**: `script_name` is the lock owner, checkpoint name and archive name, so it is
+unique among tabs (`ScriptManager.name_is_free`, case-insensitive) and never changes during a run.
+✏️ Rename (`request_rename`, `QInputDialog`) refuses a name used by another tab; button disabled while
+running. `set_name()` updates label + tab title (`name_changed` signal). Save renames the tab after the
+file (like Load); Load/Save/new-tab clashes get `name (2)`, `name (3)`… Crash recovery restores the name.
 
 ## GUI structure
 - Tab 1: **General View** — grid of `InstrumentPanel` (one per Eurotherm); global shutter frame
@@ -178,6 +197,8 @@ QThread → EurothermWorker.run() → data_ready signal
   shutter write stops the script ✅ — tested in simulation, not yet on real NI-DAQ
 - Pressure interlock (#8) ✅ in simulation — before real use: set the IG1 controller to mbar and
   `"unit": "mbar"` + `pressure_interlock` in each machine's `addresses.py`; not yet tested on real gauge
+- Run archive (#9) ✅ — before real use: set `MACHINE_NAME` and `SCRIPT_ARCHIVE_DIR` in each machine's
+  `addresses.py` (Run is blocked until then); git may be absent on instrument PCs → version `unknown`
 - Pressure gauge: simulated OK; real COM10 not yet tested end-to-end
 - `gui_main.py` uses a relative import `.GUIv5` — will fail if run directly; use `watchdog.py`
 
