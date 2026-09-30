@@ -101,7 +101,7 @@ def _parse_columns(df) -> tuple:
         if col == "timestamp":
             continue
         if col == "Pressure_P":
-            instruments.add("Pressure")
+            # Pressure has its own plot ("Show" row), it is not an instrument.
             vtypes.add("Pressure")
             continue
         parts = col.split("_", 1)
@@ -115,7 +115,8 @@ def _parse_columns(df) -> tuple:
 
 def _build_figure(filepath, sel_instruments, sel_vtypes) -> go.Figure:
     df = _load_csv(filepath)
-    if df is None or not sel_instruments or not sel_vtypes:
+    if (df is None or not sel_vtypes
+            or (not sel_instruments and "Pressure" not in sel_vtypes)):
         fig = go.Figure()
         fig.update_layout(
             annotations=[{
@@ -237,6 +238,7 @@ body {
 select { padding: 3px 6px; font-size: 13px; min-width: 260px; max-width: 480px; }
 .check-group { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 13px; }
 .check-group label { display: flex; align-items: center; gap: 3px; cursor: pointer; }
+#instr-toggle { margin-right: 10px; padding: 1px 8px; font-size: 12px; cursor: pointer; }
 #graph-container { flex: 1; min-height: 0; }
 #main-graph { width: 100%; height: 100%; }
 #log-section {
@@ -267,6 +269,7 @@ select { padding: 3px 6px; font-size: 13px; min-width: 260px; max-width: 480px; 
   </div>
   <div class="ctrl-row">
     <span class="ctrl-label">Instruments:</span>
+    <button id="instr-toggle" onclick="toggleAllInstruments()">Deselect all</button>
     <div class="check-group" id="instr-checks"></div>
   </div>
   <div class="ctrl-row">
@@ -301,6 +304,34 @@ function getSelVtypes() {
   ).map(function(e) { return e.value; });
 }
 
+function instrBoxes() {
+  return Array.from(document.querySelectorAll('#instr-checks input'));
+}
+
+function allInstrumentsChecked() {
+  var boxes = instrBoxes();
+  return boxes.length > 0 && boxes.every(function(b) { return b.checked; });
+}
+
+function updateToggleLabel() {
+  var btn = document.getElementById('instr-toggle');
+  btn.textContent = allInstrumentsChecked() ? 'Deselect all' : 'Select all';
+  btn.disabled = instrBoxes().length === 0;
+}
+
+function toggleAllInstruments() {
+  // Setting .checked does not fire onchange, so the plot is updated once below.
+  var check = !allInstrumentsChecked();
+  instrBoxes().forEach(function(b) { b.checked = check; });
+  updateToggleLabel();
+  pushUpdate();
+}
+
+function onInstrumentChange() {
+  updateToggleLabel();
+  pushUpdate();
+}
+
 function pushUpdate() {
   window.pywebview.api.update(
     _currentFile, getSelInstruments(), getSelVtypes()
@@ -328,11 +359,12 @@ function buildInstrumentChecks(instruments) {
     cb.type    = 'checkbox';
     cb.value   = name;
     cb.checked = true;
-    cb.onchange = pushUpdate;
+    cb.onchange = onInstrumentChange;
     label.appendChild(cb);
     label.appendChild(document.createTextNode('\u00a0' + name));
     container.appendChild(label);
   });
+  updateToggleLabel();
 }
 
 function buildVtypeChecks(vtypes) {

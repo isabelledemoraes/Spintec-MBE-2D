@@ -12,6 +12,12 @@ Format: `[version] — date — description`
 - **Script resume after a crash** (#10) — the "Session Recovery" dialog is gone. After a crash
   during a script, the General View shows which script and statement were interrupted until
   acknowledged; the event is logged. The script is not reloaded or resumed.
+- **Follow-Up Plot button** (#11) on the Script page, with its data collection during `hold()`
+  (no more Modbus reads every second during a hold).
+
+### Changed
+- **Dashboard** (#11) — "Select all / Deselect all" toggle button for the instruments;
+  Pressure is no longer in the instrument line, it keeps its own plot ("Pressure" in the Show line).
 
 ---
 
