@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -15,6 +16,7 @@ from PyQt6.QtWidgets import QApplication
 
 import addresses as addresses_module
 import checkpoint_manager
+import script_editor_integration
 import shutter_controller
 from script_editor_integration import ScriptEditor
 from shutter_controller import ShutterController
@@ -41,6 +43,10 @@ class ScriptRunTests(unittest.TestCase):
                               os.path.join(tmp.name, "shutter_state.json")),
             mock.patch.object(checkpoint_manager, "_FILE",
                               os.path.join(tmp.name, "checkpoint.json")),
+            # Run archive (#9) in the temp dir, not in the real SCRIPT_ARCHIVE_DIR.
+            mock.patch.object(script_editor_integration, "addresses_config",
+                              SimpleNamespace(MACHINE_NAME="test",
+                                              SCRIPT_ARCHIVE_DIR=os.path.join(tmp.name, "archive"))),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

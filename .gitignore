@@ -31,3 +31,5 @@ Desktop.ini
 dist/
 build/
 *.spec
+# Run archive (#9) — script + compile report saved at each Run
+run_archive/

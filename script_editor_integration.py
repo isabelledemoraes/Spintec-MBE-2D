@@ -3,7 +3,8 @@ import time
 import io
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton,
-    QPlainTextEdit, QTextEdit, QHBoxLayout, QTabWidget, QDialog, QFileDialog, QMessageBox
+    QPlainTextEdit, QTextEdit, QHBoxLayout, QTabWidget, QDialog, QFileDialog, QMessageBox,
+    QInputDialog
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QTextCursor, QTextCharFormat, QColor, QFont
@@ -15,10 +16,20 @@ import ast
 from html import escape
 from collections import deque
 import checkpoint_manager
+import script_archive
+import addresses as addresses_config   # module-level settings (MACHINE_NAME, SCRIPT_ARCHIVE_DIR)
 from addresses import addresses
 from script_compiler import compile_script, Level
 from ramp_planning import plan_ramp_segments
 from pressure_interlock import InterlockError
+
+
+def _unique_name(name: str, is_free) -> str:
+    """`name`, or `name (2)`, `name (3)`... until is_free(candidate) is True."""
+    candidate, n = name, 2
+    while not is_free(candidate):
+        candidate, n = f"{name} ({n})", n + 1
+    return candidate
 
 
 def _loop_flag(loop_id, key):
@@ -97,15 +108,21 @@ class ScriptEditor(QWidget):
     _hw_status = pyqtSignal(str)
     # Emitted when the pressure interlock stops the script (message to show).
     _interlock_alert = pyqtSignal(str)
+    # Emitted with the new name after a rename (the tab title follows it).
+    name_changed = pyqtSignal(str)
 
     def __init__(self, script_name, log_callback, controllers=None, shutter_ctrl=None,
-                 open_script_callback=None):
+                 open_script_callback=None, name_is_free=None):
         super().__init__()
+        # The name is also the owner of the loop/shutter locks and of the checkpoint,
+        # so it must be unique among the open tabs and never change during a run.
         self.script_name = script_name
         self.log_callback = log_callback
         # Called as open_script_callback(filepath, content) by load_script to open the
         # file in a new tab; if None, the file is loaded into this editor instead.
         self.open_script_callback = open_script_callback
+        # Called as name_is_free(name, self) -> bool; if None, every name is free.
+        self.name_is_free = name_is_free
         self.shared_controllers = controllers if controllers is not None else {}
         # Shared with the General View so shutter buttons follow script actions.
         self.shutter_ctrl = shutter_ctrl
@@ -165,8 +182,21 @@ class ScriptEditor(QWidget):
         btn_layout.addWidget(self.save_button)
         btn_layout.addWidget(self.load_button)
 
+        self.name_label = QLabel()
+        self.name_label.setTextFormat(Qt.TextFormat.PlainText)
+        font = self.name_label.font()
+        font.setBold(True)
+        self.name_label.setFont(font)
+        self.name_label.setText(script_name)
+        self.rename_button = QPushButton("✏️ Rename")
+        self.rename_button.clicked.connect(self.request_rename)
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(self.name_label)
+        name_layout.addWidget(self.rename_button)
+        name_layout.addStretch()
+
         layout = QVBoxLayout()
-        layout.addWidget(QLabel(f"<b>{script_name}</b>"))
+        layout.addLayout(name_layout)
         layout.addLayout(btn_layout)
         layout.addWidget(self.editor)
         layout.addWidget(self.report_view)
@@ -184,8 +214,19 @@ class ScriptEditor(QWidget):
             )
             return
 
+        # Recompile now: the archived report is the state at Run, not at the last Compile.
+        self.compile_current()
+        if not self._last_report.ok:
+            self.log_callback(
+                f"[{self.script_name}] Run refused: the script no longer compiles without errors."
+            )
+            return
+        code = self._last_report.code
+        # Save script + report before anything starts (#9); no archive, no run.
+        if not self._archive_run(code):
+            return
+
         self.stop_event.clear()
-        code = self.editor.toPlainText()
         self.live_plot_data = deque(maxlen=3600)
         self._hw_wait_items = []
         self.start_time = time.time()
@@ -204,6 +245,7 @@ class ScriptEditor(QWidget):
         # Lock the editor (and recompilation) while the script is running.
         self.editor.setReadOnly(True)
         self.compile_button.setEnabled(False)
+        self.rename_button.setEnabled(False)
 
         owner_id = f"{self.script_name}"
 
@@ -771,6 +813,24 @@ class ScriptEditor(QWidget):
         self.thread = threading.Thread(target=runner)
         self.thread.start()
 
+    def _archive_run(self, code: str) -> bool:
+        """Save the exact script and its compile report; False (and a message) blocks Run."""
+        try:
+            script_path, report_path = script_archive.save_run(
+                code, self._last_report, self.script_name, addresses_config,
+                resume_from=self._resume_from)
+        except Exception as e:
+            reason = str(e) if isinstance(e, script_archive.ArchiveError) \
+                else f"unexpected error: {e!r}"
+            self.log_callback(f"[{self.script_name}] Script NOT started: archive failed: {reason}")
+            QMessageBox.critical(
+                self, f"{self.script_name}: Run blocked",
+                f"The script was NOT started because it could not be archived:\n\n{reason}")
+            return False
+        self.log_callback(f"[{self.script_name}] Run archived: {script_path} "
+                          f"(+ {os.path.basename(report_path)})")
+        return True
+
     def _show_interlock_alert(self, msg: str):
         QMessageBox.warning(self, f"{self.script_name}: pressure interlock", msg)
 
@@ -821,6 +881,7 @@ class ScriptEditor(QWidget):
         cursor.setCharFormat(default_fmt)
         self.editor.setReadOnly(False)
         self.compile_button.setEnabled(True)
+        self.rename_button.setEnabled(True)
 
     def is_active(self) -> bool:
         """Return True while the runner thread is alive (running or waiting_for_hardware)."""
@@ -886,6 +947,46 @@ class ScriptEditor(QWidget):
             html.extend(timing)
         self.report_view.setHtml("<br>".join(html))
 
+    # ── Name ─────────────────────────────────────────────────────────────────
+
+    def _is_free(self, name: str) -> bool:
+        return self.name_is_free is None or self.name_is_free(name, self)
+
+    def unique_name(self, name: str) -> str:
+        """`name`, or `name (2)`, `name (3)`... if another tab already uses it."""
+        return _unique_name(name, self._is_free)
+
+    def set_name(self, name: str) -> bool:
+        """Rename the script (label + tab title). Refused while running. True if renamed."""
+        name = name.strip()
+        if not name or name == self.script_name:
+            return False
+        if self.is_active():
+            self.log_callback(f"[{self.script_name}] Cannot rename while the script is running.")
+            return False
+        old = self.script_name
+        self.script_name = name
+        self.name_label.setText(name)
+        self.name_changed.emit(name)
+        self.log_callback(f"[{name}] Renamed from '{old}'.")
+        return True
+
+    def request_rename(self):
+        """✏️ Rename button: ask for a new name; a name used by another tab is refused."""
+        if self.is_active():
+            self.log_callback(f"[{self.script_name}] Cannot rename while the script is running.")
+            return
+        name, ok = QInputDialog.getText(self, "Rename script", "Script name:",
+                                        text=self.script_name)
+        name = name.strip()
+        if not ok or not name or name == self.script_name:
+            return
+        if not self._is_free(name):
+            QMessageBox.warning(self, "Rename script",
+                                f"Another script tab is already named '{name}'.")
+            return
+        self.set_name(name)
+
     def save_script(self):
         os.makedirs("scripts", exist_ok=True)
         filepath, _ = QFileDialog.getSaveFileName(self, "Save Script", "scripts/", "Python Files (*.py)")
@@ -896,6 +997,10 @@ class ScriptEditor(QWidget):
                 self.log_callback(f"[{self.script_name}] Script saved to {filepath}")
             except Exception as e:
                 self.log_callback(f"[{self.script_name}] Save failed: {e}")
+                return
+            # The tab takes the file name, as when a script is loaded.
+            if not self.is_active():
+                self.set_name(self.unique_name(os.path.splitext(os.path.basename(filepath))[0]))
 
     def load_script(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Load Script", "scripts/", "Python Files (*.py)")
@@ -1003,21 +1108,42 @@ class ScriptManager(QWidget):
     def add_new_tab(self):
         name = f"Script {self.tab_counter}"
         self.tab_counter += 1
+        while not self.name_is_free(name):
+            name = f"Script {self.tab_counter}"
+            self.tab_counter += 1
         return self._create_tab(name)
 
     def open_script_tab(self, filepath, content):
         """Open a script loaded from disk in a new tab named after the file."""
-        name = os.path.splitext(os.path.basename(filepath))[0]
+        name = self.unique_name(os.path.splitext(os.path.basename(filepath))[0])
         editor = self._create_tab(name, content)
         self.log_callback(f"[{name}] Script loaded from {filepath}")
         return editor
 
+    def name_is_free(self, name: str, editor=None) -> bool:
+        """True if no tab other than `editor` uses `name` (case-insensitive).
+        Names must be unique: the name owns the loop/shutter locks of a run."""
+        key = name.strip().casefold()
+        for i in range(self.tabs.count()):
+            other = self.tabs.widget(i)
+            if (isinstance(other, ScriptEditor) and other is not editor
+                    and other.script_name.strip().casefold() == key):
+                return False
+        return True
+
+    def unique_name(self, name: str) -> str:
+        """`name`, or `name (2)`, `name (3)`... if a tab already uses it."""
+        return _unique_name(name, self.name_is_free)
+
     def _create_tab(self, name, content=None):
         """Create a script tab, make it the active one and put the cursor in its editor."""
         editor = ScriptEditor(name, self.log_callback, self.controllers, self.shutter_ctrl,
-                              open_script_callback=self.open_script_tab)
+                              open_script_callback=self.open_script_tab,
+                              name_is_free=self.name_is_free)
         if content is not None:
             editor.editor.setPlainText(content)
+        editor.name_changed.connect(
+            lambda new_name, ed=editor: self.tabs.setTabText(self.tabs.indexOf(ed), new_name))
         index = self.tabs.addTab(editor, name)
         self.tabs.setCurrentIndex(index)
         editor.editor.setFocus()
