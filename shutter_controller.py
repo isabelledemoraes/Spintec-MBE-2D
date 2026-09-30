@@ -5,6 +5,7 @@ import threading
 from pressure_interlock import interlock_for_line, check_pressure, is_bypassed
 
 STATE_FILE = "shutter_state.json"
+DAQ_NAME = "NI-DAQ"   # name in the connection monitor / banner (#12)
 
 try:
     import nidaqmx
@@ -14,17 +15,20 @@ except Exception as _e:  # broad on purpose
     nidaqmx = None
     LineGrouping = None
 
-def initialize_daq_outputs(device: str = "Dev1") -> None:
+def initialize_daq_outputs(device: str = "Dev1") -> bool | None:
     """
     Configure all USB-6501 ports as digital outputs and set all lines LOW.
 
     Must be called before any other DAQmx task is created, to prevent the
     card's default high-impedance input state from floating shutter control
     lines and causing unintended shutter openings on power cycle or reconnect.
+
+    Returns True on success, False on failure, None when nidaqmx is missing
+    (used as the NI-DAQ startup connection check, issue #12).
     """
     if nidaqmx is None:
         print("[Shutter] nidaqmx not available — skipping DAQ output initialization.")
-        return
+        return None
     try:
         with nidaqmx.Task() as task:
             for port in range(3):  # port0, port1, port2
@@ -34,8 +38,10 @@ def initialize_daq_outputs(device: str = "Dev1") -> None:
                 )
             task.write([0, 0, 0])  # All 24 lines LOW — shutters closed
         print(f"[Shutter] DAQ outputs initialized: all ports on {device} set LOW.")
+        return True
     except Exception as e:
         print(f"[Shutter] WARNING: DAQ output initialization failed: {e}")
+        return False
 
 
 class ShutterController:
@@ -53,6 +59,9 @@ class ShutterController:
         if addresses_map is None:
             from addresses import addresses as addresses_map
         self.addresses = addresses_map
+        # ConnectionMonitor (issue #12): every NI-DAQ write is reported under
+        # DAQ_NAME. Set by MainWindow; None = not monitored.
+        self.monitor = None
 
     def _load_state(self):
         if os.path.exists(STATE_FILE):
@@ -78,17 +87,27 @@ class ShutterController:
                 self._save_state()
                 return True
 
+            written, error = False, None
             try:
                 with nidaqmx.Task() as task:
                     task.do_channels.add_do_chan(line_name, line_grouping=LineGrouping.CHAN_PER_LINE)
                     task.write(state)
+                written = True
                 self.state[loop_id] = state
                 self._save_state()
                 print(f"[Shutter] {loop_id} → {line_name} = {'HIGH' if state else 'LOW'}")
                 return True
             except Exception as e:
+                error = e
                 print(f"[Shutter] ERROR writing to {line_name}: {e}")
                 return False
+            finally:
+                # Only the NI-DAQ write counts for the connection check (#12).
+                if self.monitor is not None:
+                    if written:
+                        self.monitor.report_success(DAQ_NAME)
+                    else:
+                        self.monitor.report_failure(DAQ_NAME, f"write to {line_name} failed: {error}")
 
     def _check_interlock(self, loop_id, line_name):
         """Every opening of an interlocked line, from the GUI or a script, passes here."""

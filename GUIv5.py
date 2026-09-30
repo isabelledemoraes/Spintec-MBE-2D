@@ -16,7 +16,9 @@ from PyQt6.QtGui import QIcon
 from eurotherm_controller import EurothermController
 from addresses import addresses
 from log_manager import LogManager
-from shutter_controller import ShutterController, initialize_daq_outputs
+import shutter_controller
+from shutter_controller import ShutterController, initialize_daq_outputs, DAQ_NAME
+from connection_monitor import ConnectionMonitor, LOST, panel_text, frame_style
 from pressure_interlock import InterlockError, bypassed_shutters
 from pressure_gauge_panel import PressureGaugePanel
 from pressure_gauge_controller import PressureGaugeController
@@ -48,13 +50,19 @@ def make_controller(loop_id):
 
 
 
+PANEL_STYLE = "background-color: #f0f0f0; padding: 5px; border-radius: 8px;"
+SHUTTER_FRAME_STYLE = "background-color: #f8f8f8; padding: 5px; border-radius: 8px;"
+
+
 class InstrumentPanel(QFrame):
     def __init__(self, name, controller=None, shutter_line=None, shutter_ctrl=None):
         super().__init__()
         self.name = name
         self.controller = controller
         self.setFrameStyle(QFrame.Shape.StyledPanel)
-        self.setStyleSheet("background-color: #f0f0f0; padding: 5px; border-radius: 8px;")
+        self.setObjectName("instrumentPanel")
+        self._conn_mark = None   # last connection mark shown (#12)
+        self.setStyleSheet(frame_style(PANEL_STYLE, "instrumentPanel", lost=False))
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout = QVBoxLayout(self)
 
@@ -92,6 +100,11 @@ class InstrumentPanel(QFrame):
         self.lock_label = QLabel("")
         self.lock_label.setToolTip("")
 
+        # Connection status (#12): "⚠ No communication — last OK ..." / "Recovered at ..."
+        self.comm_label = QLabel("")
+        self.comm_label.setWordWrap(True)
+        self.comm_label.hide()
+
         info_grid = QGridLayout()
         info_grid.addWidget(self.name_label, 0, 0)
         info_grid.addWidget(self.mode_label, 0, 1)
@@ -104,6 +117,7 @@ class InstrumentPanel(QFrame):
         info_grid.addWidget(self.ramp_power_value, 3, 1)
 
         layout.addLayout(info_grid)
+        layout.addWidget(self.comm_label)
         layout.addWidget(self.toggle_btn)
         layout.addWidget(self.details_frame)
         layout.addWidget(self.status_dot)
@@ -140,6 +154,20 @@ class InstrumentPanel(QFrame):
 
     def set_status_dot(self, color):
         self.status_dot.setStyleSheet(f"background-color: {color}; border-radius: 6px;")
+
+    def set_connection(self, status):
+        """Red border + ⚠ + last OK time while lost; "Recovered" until acknowledged (#12)."""
+        lost = status.state == LOST
+        text = panel_text(status)
+        if (lost, text) == self._conn_mark:
+            return
+        self._conn_mark = (lost, text)
+        self.setStyleSheet(frame_style(PANEL_STYLE, "instrumentPanel", lost))
+        self.comm_label.setText(text)
+        self.comm_label.setStyleSheet(f"color: {'#b02a37' if lost else '#146c43'}; font-weight: bold;")
+        self.comm_label.setVisible(bool(text))
+        if lost:
+            self.set_status_dot("red")
 
     def set_shutter_display(self, state: bool, owner: str | None):
         """Show the real shutter state; disable the button while a script controls it."""
@@ -191,7 +219,8 @@ class InstrumentPanel(QFrame):
             print(f"[{self.name}] Failed to set temperature: {e}")
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, daq_init_ok=None):
+        """daq_init_ok: result of initialize_daq_outputs() (NI-DAQ startup check, #12)."""
         super().__init__()
         self.setWindowTitle("MBEControl-Se" + (" [SIMULATION]" if SIMULATION else ""))
         self.resize(1000, 800)
@@ -213,6 +242,9 @@ class MainWindow(QMainWindow):
         )
 
         self.controllers = {}
+        # Connection status of every instrument (#12), fed by the workers and
+        # the shutter controller; shown by _update_connection_status.
+        self.connection_monitor = ConnectionMonitor()
 
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -242,6 +274,30 @@ class MainWindow(QMainWindow):
         _banner_layout.addWidget(_ack_btn)
         self._crash_banner.hide()
         _gen_outer.addWidget(self._crash_banner)
+
+        # Communication banner (issue #12): instruments lost, and recovered ones
+        # until acknowledged. See _update_connection_status.
+        self._comm_banner = QFrame()
+        self._comm_banner.setStyleSheet(
+            "QFrame { background-color: #f8d7da; border: 1px solid #dc3545; }"
+            "QLabel { color: #842029; font-weight: bold; border: none; }"
+        )
+        _comm_layout = QHBoxLayout(self._comm_banner)
+        self._comm_label = QLabel()
+        self._comm_label.setWordWrap(True)
+        self._comm_label.setTextFormat(Qt.TextFormat.PlainText)
+        _comm_layout.addWidget(self._comm_label, 1)
+        self._comm_ack_btn = QPushButton("Acknowledge")
+        self._comm_ack_btn.setToolTip("Remove recovered instruments from this message")
+        self._comm_ack_btn.clicked.connect(self._acknowledge_comm)
+        _comm_layout.addWidget(self._comm_ack_btn)
+        self._comm_banner.hide()
+        _gen_outer.addWidget(self._comm_banner)
+
+        # Shown until every instrument has answered or is lost (startup check).
+        self._checking_label = QLabel("Checking instruments...")
+        self._checking_label.setStyleSheet("color: #555; font-style: italic; padding: 2px;")
+        _gen_outer.addWidget(self._checking_label)
 
         _gen_scroll = QScrollArea()
         _gen_scroll.setWidgetResizable(True)
@@ -300,6 +356,7 @@ class MainWindow(QMainWindow):
         ]
 
         for i, loop_id in enumerate(loop_ids):
+            self.connection_monitor.add(loop_id)
             try:
                 ctrl = make_controller(loop_id)
                 ctrl.connect()
@@ -315,6 +372,7 @@ class MainWindow(QMainWindow):
             self.general_layout.addWidget(panel, i // 3, i % 3)
 
         if USE_PRESSURE_GAUGE:
+            self.connection_monitor.add("Pressure")
             try:
                 pg_ctrl = SimPressureGaugeController("Pressure") if SIMULATION else PressureGaugeController("Pressure")
                 pg_ctrl.connect()
@@ -342,15 +400,18 @@ class MainWindow(QMainWindow):
             self.append_log(f"[Shutter] WARNING: pressure interlock BYPASSED in addresses.py "
                             f"for {sid}: it opens without pressure check.")
 
+        # After every instrument is registered: the startup check ends when all have reported.
+        self._monitor_daq(daq_init_ok)
+
         self.threads = []
         for panel in self.instrument_panels:
             worker = None
             # Decide which worker to create based on the panel type
             if isinstance(panel, PressureGaugePanel):
-                worker = PressureWorker(panel.name, panel.controller)
+                worker = PressureWorker(panel.name, panel.controller, self.connection_monitor)
             else:
                 # Assume any other panel is for a Eurotherm
-                worker = EurothermWorker(panel.name, panel.controller)
+                worker = EurothermWorker(panel.name, panel.controller, self.connection_monitor)
 
             if worker:
                 thread = QThread()
@@ -367,7 +428,70 @@ class MainWindow(QMainWindow):
         # Feature 3: poll active_script_locks every second to update lock icons.
         self._lock_poll_timer = QTimer(self)
         self._lock_poll_timer.timeout.connect(self._update_instrument_locks)
+        self._lock_poll_timer.timeout.connect(self._update_connection_status)
         self._lock_poll_timer.start(1000)
+        self._update_connection_status()
+
+    def _monitor_daq(self, daq_init_ok):
+        """
+        NI-DAQ startup status (#12): the result of initialize_daq_outputs() (run
+        before the window). Afterwards every shutter write is reported; a single
+        failed write marks the NI-DAQ lost.
+        """
+        if not USE_SHUTTER_HARDWARE:
+            return
+        if daq_init_ok is None and shutter_controller.nidaqmx is not None:
+            # initialize_daq_outputs() was not run (other launcher): status unknown.
+            self.append_log(f"[Connection] {DAQ_NAME} not checked at startup "
+                            f"(outputs not initialized); not monitored.")
+            return
+        self.connection_monitor.add(DAQ_NAME, max_failures=1)
+        self.shutter_ctrl.monitor = self.connection_monitor
+        if daq_init_ok:
+            self.connection_monitor.report_success(DAQ_NAME)
+        elif daq_init_ok is False:
+            self.connection_monitor.report_failure(
+                DAQ_NAME, "output initialization failed (see console)")
+        elif SIMULATION:
+            self.connection_monitor.report_success(DAQ_NAME)   # simulated shutters
+        else:
+            self.connection_monitor.mark_lost(
+                DAQ_NAME, "nidaqmx not installed: shutters are NOT driven")
+
+    def _update_connection_status(self):
+        """Every 1 s: log lost/recovered events, refresh the banner and the panel marks (#12)."""
+        monitor = self.connection_monitor
+        for message in monitor.drain_events():
+            self.append_log(f"[Connection] {message}")
+        self._checking_label.setVisible(not monitor.startup_done())
+        text = monitor.banner_text()
+        self._comm_label.setText(text or "")
+        self._comm_banner.setVisible(text is not None)
+        self._comm_ack_btn.setVisible(monitor.has_recovered())
+
+        statuses = monitor.snapshot()
+        for panel in self.instrument_panels:
+            status = statuses.get(panel.name)
+            if status is not None:
+                panel.set_connection(status)
+        daq = statuses.get(DAQ_NAME)
+        if daq is not None:
+            lost = daq.state == LOST
+            text = panel_text(daq)
+            if (lost, text) != self._shutter_frame_mark:
+                self._shutter_frame_mark = (lost, text)
+                self._shutter_frame.setStyleSheet(
+                    frame_style(SHUTTER_FRAME_STYLE, "shutterFrame", lost))
+                self._daq_label.setText(f"{DAQ_NAME}: {text}" if text else "")
+                self._daq_label.setStyleSheet(
+                    f"color: {'#b02a37' if lost else '#146c43'}; font-weight: bold;")
+                self._daq_label.setVisible(bool(text))
+
+    def _acknowledge_comm(self):
+        names = self.connection_monitor.acknowledge()
+        if names:
+            self.append_log(f"[Connection] Recovery acknowledged: {', '.join(names)}.")
+        self._update_connection_status()
 
     def _report_previous_crash(self):
         """
@@ -452,11 +576,19 @@ class MainWindow(QMainWindow):
 
         frame = QFrame()
         frame.setFrameStyle(QFrame.Shape.StyledPanel)
-        frame.setStyleSheet("background-color: #f8f8f8; padding: 5px; border-radius: 8px;")
+        frame.setObjectName("shutterFrame")
+        frame.setStyleSheet(frame_style(SHUTTER_FRAME_STYLE, "shutterFrame", lost=False))
+        self._shutter_frame = frame
+        self._shutter_frame_mark = None
 
         layout = QVBoxLayout(frame)
         title = QLabel("<b>Shutters</b>")
         layout.addWidget(title)
+        # NI-DAQ connection status (#12)
+        self._daq_label = QLabel("")
+        self._daq_label.setWordWrap(True)
+        self._daq_label.hide()
+        layout.addWidget(self._daq_label)
 
         # Define shutters: label text, ID key in addresses["Shutters"]
         shutters = [
@@ -655,11 +787,11 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     import ctypes
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("MBEControl.2026")
-    initialize_daq_outputs()  # must be first DAQ call — sets all lines LOW
+    daq_ok = initialize_daq_outputs()  # must be first DAQ call — sets all lines LOW
     app = QApplication(sys.argv)
     _icon = QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mbe_icon.ico"))
     app.setWindowIcon(_icon)
-    window = MainWindow()
+    window = MainWindow(daq_init_ok=daq_ok)
     window.setWindowIcon(_icon)
     window.show()
     sys.exit(app.exec())

@@ -4,6 +4,10 @@ from collections import deque
 import pyqtgraph as pg
 import time
 
+from connection_monitor import LOST, panel_text, frame_style
+
+PANEL_STYLE = "background-color: #f0f0f0; padding: 5px; border-radius: 8px;"
+
 
 class PressureGaugePanel(QFrame):
     def __init__(self, name, controller=None):
@@ -11,7 +15,9 @@ class PressureGaugePanel(QFrame):
         self.name = name
         self.controller = controller
         self.setFrameStyle(QFrame.Shape.StyledPanel)
-        self.setStyleSheet("background-color: #f0f0f0; padding: 5px; border-radius: 8px;")
+        self.setObjectName("pressurePanel")
+        self._conn_mark = None   # last connection mark shown (#12)
+        self.setStyleSheet(frame_style(PANEL_STYLE, "pressurePanel", lost=False))
 
         layout = QVBoxLayout(self)
 
@@ -25,8 +31,13 @@ class PressureGaugePanel(QFrame):
         else:
             self.status_dot.setStyleSheet("background-color: red; border-radius: 6px;")
 
+        # Connection status (#12): "⚠ No communication — last OK ..." / "Recovered at ..."
+        self.comm_label = QLabel("")
+        self.comm_label.hide()
+
         layout.addWidget(self.name_label)
         layout.addWidget(self.pressure_label)
+        layout.addWidget(self.comm_label)
         layout.addWidget(self.status_dot)
 
         # DateAxisItem formats Unix timestamps as HH:MM:SS / DD/MM etc.
@@ -55,6 +66,20 @@ class PressureGaugePanel(QFrame):
 
     def set_status_dot(self, color):
         self.status_dot.setStyleSheet(f"background-color: {color}; border-radius: 6px;")
+
+    def set_connection(self, status):
+        """Red border + ⚠ + last OK time while lost; "Recovered" until acknowledged (#12)."""
+        lost = status.state == LOST
+        text = panel_text(status)
+        if (lost, text) == self._conn_mark:
+            return
+        self._conn_mark = (lost, text)
+        self.setStyleSheet(frame_style(PANEL_STYLE, "pressurePanel", lost))
+        self.comm_label.setText(text)
+        self.comm_label.setStyleSheet(f"color: {'#b02a37' if lost else '#146c43'}; font-weight: bold;")
+        self.comm_label.setVisible(bool(text))
+        if lost:
+            self.set_status_dot("red")
 
     def _update_plot(self):
         if len(self.data) >= 2:

@@ -41,6 +41,7 @@ Simulation mode: `SIMULATION = True` in `GUIv5.py` — uses `SimEurothermControl
 | `script_editor_integration.py` | `ScriptEditor` + `ScriptManager`; DSL execution engine |
 | `script_compiler.py` | Compile step: `compile_script()` runs every check in `CHECKS` → `CompileReport` (ERROR/WARNING) |
 | `script_archive.py` | Run archive (#9): `save_run()` writes script + compile report before execution; `ArchiveError` blocks Run |
+| `connection_monitor.py` | Connection status (#12), no Qt: counts consecutive failed tries per instrument → lost / recovered, banner + log text |
 | `data_updater_threaded.py` | `EurothermWorker` (2 s poll) + `PressureWorker` (1 s poll) via `QThread` |
 | `log_manager.py` | CSV logger; Standby mode (60 s interval, daily file) / Growth mode (5 s interval, named file) |
 | `checkpoint_manager.py` | JSON crash record written before each script statement; `crash_message()` for the startup banner |
@@ -137,6 +138,20 @@ same name + same second → `_2`, `_3` on both); script file removed if the repo
 `git rev-parse --short HEAD` (+`-dirty`) read once at import, else `unknown`. Tests that press Run
 must patch `script_editor_integration.addresses_config` to a temp folder.
 
+**Connection check** (#12): no new polling. Each `EurothermWorker` / `PressureWorker` poll cycle
+reports one try to `MainWindow.connection_monitor` (success, or failure = first failing read; a gauge
+value that is non-finite/≤ 0 fails, same rule as the interlock via `is_valid_pressure`). `MAX_FAILURES`
+= 10 consecutive failed polls → LOST (since = first failed try); delay between tries = worker
+`interval_s` (2 s Eurotherm, 1 s gauge); a real Eurotherm failed poll itself takes ~2.1 s (3 retries).
+Controller init failure → LOST at once. NI-DAQ (`DAQ_NAME`, max 1 failure): startup status =
+result of `initialize_daq_outputs()` passed to `MainWindow(daq_init_ok=...)`, then every
+`ShutterController.set_shutter` write is reported; `nidaqmx` missing → simulated OK if SIMULATION,
+else LOST. The workers' first cycles are the startup check ("Checking instruments..." until every
+instrument answered or is lost). The 1 s GUI timer drains events to `append_log` (`[Connection] ...`),
+refreshes the red banner and panel marks (red border, ⚠ + last OK). A recovered instrument stays in
+the banner until **Acknowledge** (still-lost ones stay). Simulation: `fail = True` on a sim controller
+makes it stop answering. Running scripts are NOT affected (detect and alert only).
+
 **Tab close protection**: `ScriptManager.close_tab` silently blocks if `editor.is_active()`.
 
 **Script names**: `script_name` is the lock owner, checkpoint name and archive name, so it is
@@ -209,6 +224,10 @@ QThread → EurothermWorker.run() → data_ready signal
 - UI cleanup (#11): dashboard Select/Deselect all toggle + Pressure out of the instrument line
   (`visu_window.py` only); Script page "Follow-Up Plot" button removed with its `hold()` data
   collection ✅
+- Connection check (#12) ✅ in simulation — not yet tested on real hardware. Open: stale values stay in
+  `latest_data`/CSV while an instrument is lost; Compile does not warn about lost instruments; runtime
+  behavior of scripts on lost instruments unchanged (`_continue_segments` jumps to the next segment on a
+  read error — possible fast ramp through the Au critical zone)
 - Pressure gauge: simulated OK; real COM10 not yet tested end-to-end
 - `gui_main.py` uses a relative import `.GUIv5` — will fail if run directly; use `watchdog.py`
 
