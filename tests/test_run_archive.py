@@ -2,9 +2,11 @@
 Run archive (#9) through the Run button: ScriptEditor + ShutterController,
 no NI-DAQ, offscreen Qt. Run with: python -m unittest discover tests
 """
+import ast
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -37,9 +39,15 @@ class RunArchiveTests(unittest.TestCase):
         self.tmp = tmp.name
         self.folder = os.path.join(self.tmp, "archive")
         self.config = SimpleNamespace(MACHINE_NAME="mbe-test", SCRIPT_ARCHIVE_DIR=self.folder)
-        self.executed = []   # script text passed to the checkpoint = text executed
+        self.executed = []   # script text parsed by the run thread = text executed
         self.alerts = []
-        real_save = checkpoint_manager.save
+        real_parse = ast.parse
+
+        def parse(source, *args, **kw):
+            if threading.current_thread() is not threading.main_thread():
+                self.executed.append(source)
+            return real_parse(source, *args, **kw)
+
         for patcher in (
             mock.patch.dict(addresses_module.addresses, ADDR, clear=True),
             mock.patch.object(script_editor_integration, "addresses_config", self.config),
@@ -48,9 +56,7 @@ class RunArchiveTests(unittest.TestCase):
                               os.path.join(self.tmp, "shutter_state.json")),
             mock.patch.object(checkpoint_manager, "_FILE",
                               os.path.join(self.tmp, "checkpoint.json")),
-            mock.patch.object(checkpoint_manager, "save",
-                              lambda name, text, i: (self.executed.append(text),
-                                                     real_save(name, text, i))),
+            mock.patch.object(script_editor_integration.ast, "parse", parse),
             mock.patch.object(script_editor_integration.QMessageBox, "critical",
                               lambda parent, title, text: self.alerts.append(text)),
         ):

@@ -95,8 +95,10 @@ call venv\Scripts\activate
 python watchdog.py
 ```
 
-> `watchdog.py` automatically restarts the software if it crashes, and
-> offers to resume any script that was running at the time of the crash.
+> `watchdog.py` automatically restarts the software if it crashes. If a
+> script was running, the General View then shows which script and statement
+> were interrupted. The script is **not** resumed: check the machine state
+> and start a new script if needed.
 
 **Simulation mode (no instruments needed):**
 Set `SIMULATION = True` at the top of `addresses.py` (it is also the default

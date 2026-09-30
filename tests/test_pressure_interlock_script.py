@@ -97,7 +97,7 @@ class ScriptRunTests(unittest.TestCase):
         self.assertIn(f"[Test] {msg}", self.log)
         self.assertEqual(self.alerts, [msg])
         self.assertTrue(editor.stop_event.is_set())       # background ramp segments stop too
-        self.assertIsNone(checkpoint_manager.load())       # not a crash: no resume offered
+        self.assertIsNone(checkpoint_manager.load())       # not a crash: no crash record
 
     def test_unavailable_gauge_stops_script(self):
         self.run_script(TWO_OPENINGS, None)
