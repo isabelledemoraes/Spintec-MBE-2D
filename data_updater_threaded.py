@@ -46,6 +46,7 @@ class BaseWorker(QObject):
 class EurothermWorker(BaseWorker):
     """Worker specifically for fetching data from Eurotherm controllers."""
     interval_s = 2.0
+    data_keys = ("T", "P", "SP_T", "SP_P", "MODE", "Ramp_T", "Ramp_P")   # emitted each poll
 
     def run(self):
         while not self.stopped:
@@ -76,6 +77,7 @@ class EurothermWorker(BaseWorker):
 class PressureWorker(BaseWorker):
     """Worker specifically for fetching data from the Pressure Gauge."""
     interval_s = 1.0
+    data_keys = ("P",)
 
     def run(self):
         while not self.stopped:

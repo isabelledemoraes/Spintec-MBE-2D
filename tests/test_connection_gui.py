@@ -3,6 +3,8 @@ Connection check (#12) in the real MainWindow: real worker threads, simulated
 controllers (with the "fail" flag), no NI-DAQ, offscreen Qt, files in a temp dir.
 Run with: python -m unittest discover tests
 """
+import csv
+import math
 import os
 import sys
 import tempfile
@@ -12,6 +14,8 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from datetime import datetime
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
@@ -197,6 +201,47 @@ class ConnectionGuiTests(unittest.TestCase):
             w = self.open_window()
         self.wait_for(w, lambda: "NI-DAQ" in (self.banner(w) or ""))
         self.assertIn("nidaqmx not installed", self.log(w))
+
+    def log_csv_row(self, window):
+        """Force one CSV log entry now and return the last row as a dict."""
+        window.logger.last_log_time = datetime.min
+        window.write_log_entry()
+        with open(window.logger.current_log_file, newline="") as f:
+            return list(csv.DictReader(f))[-1]
+
+    def test_csv_nan_while_not_answering(self):
+        w = self.open_window()
+        self.wait_for(w, lambda: w.connection_monitor.startup_done()
+                      and "Au_T" in w.latest_data and not math.isnan(w.latest_data["Au_T"]))
+        row = self.log_csv_row(w)
+        self.assertEqual(float(row["Au_T"]), 25.0)
+        self.assertEqual(row["Au_MODE"], "auto")
+
+        self.sims["Au"].fail = True             # NaN from the first failed poll, before LOST
+        self.wait_for(w, lambda: w.connection_monitor.snapshot()["Au"].failures >= 1)
+        row = self.log_csv_row(w)
+        for key in ("T", "P", "SP_T", "SP_P", "MODE", "Ramp_T", "Ramp_P"):
+            self.assertEqual(row[f"Au_{key}"], "nan", key)
+        self.assertEqual(float(row["Se1_T"]), 25.0)
+        self.assertNotEqual(row["Pressure_P"], "nan")
+
+        self.sims["Au"].fail = False
+        self.wait_for(w, lambda: w.connection_monitor.snapshot()["Au"].answering
+                      and not math.isnan(w.latest_data["Au_T"]))
+        self.assertEqual(float(self.log_csv_row(w)["Au_T"]), 25.0)
+
+    def test_csv_columns_exist_for_instrument_never_answering(self):
+        self.gauge.fail = True
+        w = self.open_window()
+        self.wait_for(w, w.connection_monitor.startup_done)
+        row = self.log_csv_row(w)
+        self.assertEqual(row["Pressure_P"], "nan")
+        self.gauge.fail = False                 # comes back: same columns, header still valid
+        self.wait_for(w, lambda: not math.isnan(w.latest_data["Pressure_P"])
+                      and w.connection_monitor.snapshot()["Pressure"].answering)
+        row = self.log_csv_row(w)
+        self.assertAlmostEqual(float(row["Pressure_P"]), 1.5e-9)
+        self.assertIsNone(row.get(None))        # no extra fields beyond the header
 
     def test_startup_check_does_not_block_gui_thread(self):
         self.slow = {"Au", "Se1"}            # every read blocks 2 s in the worker threads

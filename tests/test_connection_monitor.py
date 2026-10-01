@@ -154,6 +154,17 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(self.state("Au"), LOST)
         self.assertIn("controller could not be initialized", self.lost_events()[0])
 
+    def test_answering_only_after_a_successful_last_try(self):
+        self.assertFalse(self.mon.snapshot()["Au"].answering)        # not yet answered
+        self.mon.report_success("Au")
+        self.assertTrue(self.mon.snapshot()["Au"].answering)
+        self.fail("Au", 1)
+        self.assertFalse(self.mon.snapshot()["Au"].answering)        # failing, not lost yet
+        self.mon.report_success("Au")
+        self.assertTrue(self.mon.snapshot()["Au"].answering)
+        self.mon.mark_lost("Pressure", "port")
+        self.assertFalse(self.mon.snapshot()["Pressure"].answering)
+
     def test_checking_before_first_answer(self):
         self.assertEqual(self.state("Au"), CHECKING)
         self.assertFalse(self.mon.startup_done())

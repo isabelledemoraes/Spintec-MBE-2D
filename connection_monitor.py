@@ -58,6 +58,11 @@ class InstrumentStatus:
         return CONNECTED
 
     @property
+    def answering(self) -> bool:
+        """The last try succeeded: the instrument's latest values are current."""
+        return self.last_ok is not None and self.failures == 0 and self.lost_since is None
+
+    @property
     def checked(self) -> bool:
         """The startup check is over for this instrument (it answered or it is lost)."""
         return self.last_ok is not None or self.lost_since is not None

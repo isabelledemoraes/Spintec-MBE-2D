@@ -231,6 +231,8 @@ class MainWindow(QMainWindow):
 
         self.instrument_panels = []
         self.latest_data = {}
+        # latest_data keys of each instrument; NaN in the CSV while it does not answer (#12)
+        self._log_keys = {}
 
         self.logger = LogManager()
         self.dialog_log_dir = "logs"
@@ -414,6 +416,11 @@ class MainWindow(QMainWindow):
                 worker = EurothermWorker(panel.name, panel.controller, self.connection_monitor)
 
             if worker:
+                # Every column exists from the start (NaN until the first answer),
+                # so the CSV header does not depend on which instruments answered.
+                keys = [f"{panel.name}_{k}" for k in worker.data_keys]
+                self._log_keys[panel.name] = keys
+                self.latest_data.update(dict.fromkeys(keys, float("nan")))
                 thread = QThread()
                 worker.moveToThread(thread)
                 thread.started.connect(worker.run)
@@ -701,6 +708,13 @@ class MainWindow(QMainWindow):
     def write_log_entry(self):
         """Periodically called by a QTimer to attempt logging."""
         try:
+            # An instrument whose last poll failed is logged as NaN, never with
+            # its last (stale) values; they come back with its next answer (#12).
+            statuses = self.connection_monitor.snapshot()
+            for name, keys in self._log_keys.items():
+                status = statuses.get(name)
+                if status is not None and not status.answering:
+                    self.latest_data.update(dict.fromkeys(keys, float("nan")))
             # Always call the logger and let it decide what to do.
             self.logger.log(self.latest_data.copy())
         except Exception as e:

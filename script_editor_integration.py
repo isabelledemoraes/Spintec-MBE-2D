@@ -482,16 +482,29 @@ class ScriptEditor(QWidget):
 
                         def _continue_segments(segs, prev_target):
                             for idx, seg in enumerate(segs, start=2):
-                                # Poll PV until the previous segment target is reached
+                                # Poll PV until the previous segment target is reached.
+                                # A failed read never moves on to the next segment:
+                                # keep waiting until the PV can be read again.
+                                read_failed = False
                                 while True:
                                     if stop_ev.is_set():
                                         return
                                     try:
                                         pv = ctrl.read_value(loop_id, "temperature_pv")
+                                    except Exception as e:
+                                        if not read_failed:
+                                            read_failed = True
+                                            self.log_callback(
+                                                f"[{loop_id}] Cannot read PV ({e}): segment {idx}/{n_total} "
+                                                f"held until communication is back.")
+                                    else:
+                                        if read_failed:
+                                            read_failed = False
+                                            self.log_callback(
+                                                f"[{loop_id}] PV readable again ({pv:.1f}°C): "
+                                                f"waiting for {prev_target}°C before segment {idx}/{n_total}.")
                                         if abs(pv - prev_target) <= 3.0:
                                             break
-                                    except Exception:
-                                        break
                                     time.sleep(2)
                                 if stop_ev.is_set():
                                     return
