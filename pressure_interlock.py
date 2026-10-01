@@ -64,6 +64,11 @@ def _is_positive_number(value) -> bool:
             and value > 0)
 
 
+def is_valid_pressure(value) -> bool:
+    """A usable gauge reading: finite and > 0. Also used by the connection check (#12)."""
+    return _is_positive_number(value)
+
+
 def config_problem(addresses: dict, config) -> str | None:
     """Why this interlock configuration cannot be used, or None if it is valid."""
     limit = config.get("max_pressure_mbar") if isinstance(config, dict) else None

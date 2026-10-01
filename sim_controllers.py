@@ -20,6 +20,12 @@ class SimEurothermController:
             "Ramp_OP": 0.0,     # %/s
         }
         self._last_tick = time.time()
+        # True = the instrument stops answering: every call raises (tests, #12).
+        self.fail = False
+
+    def _check_answer(self):
+        if self.fail:
+            raise ConnectionError(f"[{self.loop_id}] Simulated: no answer.")
 
     def connect(self):
         self.connected = True
@@ -61,25 +67,32 @@ class SimEurothermController:
                 self._state["output_pv"] = self._state["output_setpoint"]
 
     def read_value(self, loop_id: str, name: str):
+        self._check_answer()
         self._tick()
         return self._state[name]
 
     def write_value(self, loop_id: str, name: str, value):
+        self._check_answer()
         self._state[name] = value
 
     def write_register(self, loop_id: str, reg_name: str, value):
+        self._check_answer()
         self._state[reg_name] = value
 
     def get_mode(self, loop_id: str) -> str:
+        self._check_answer()
         return self._state["mode"]
 
     def set_mode(self, loop_id: str, mode: str):
+        self._check_answer()
         self._state["mode"] = mode
 
     def get_ramp_status(self, loop_id: str) -> str:
+        self._check_answer()
         return self._state["ramp_status"]
 
     def set_ramp_status(self, loop_id: str, enable: bool):
+        self._check_answer()
         self._state["ramp_status"] = "on" if enable else "off"
 
 
@@ -90,6 +103,7 @@ class SimPressureGaugeController:
         self.loop_id = loop_id
         self.connected = False
         self.pressure = 1.5e-9  # mbar; change it to test the Liquid_N2 interlock
+        self.fail = False       # True = the gauge stops answering (tests, #12)
 
     def connect(self):
         self.connected = True
@@ -98,4 +112,6 @@ class SimPressureGaugeController:
         self.connected = False
 
     def read_value(self, name: str):
+        if self.fail:
+            raise IOError("Simulated: no answer from gauge.")
         return self.pressure
