@@ -19,7 +19,7 @@ from addresses import addresses
 from script_compiler import compile_script, Level
 from ramp_planning import plan_ramp_segments
 from pressure_interlock import InterlockError
-from script_template import SCRIPT_TEMPLATE
+from script_help import ScriptHelpDialog
 
 
 def _unique_name(name: str, is_free) -> str:
@@ -129,7 +129,6 @@ class ScriptEditor(QWidget):
         self._hw_wait_items = []  # [(loop_id, finish_datetime), ...] populated by temperature_ramp
 
         self.editor = QPlainTextEdit()
-        # Starts empty; ScriptManager.add_new_tab fills in the commented function list.
 
         self.compile_button = QPushButton("Compile")
         self.compile_button.clicked.connect(self.compile_current)
@@ -147,6 +146,10 @@ class ScriptEditor(QWidget):
 
         self.load_button = QPushButton("📂 Load Script")
         self.load_button.clicked.connect(self.load_script)
+
+        self.help_button = QPushButton("❓ Help")
+        self.help_button.clicked.connect(self.show_help)
+        self._help_dialog = None
 
         self._stmt_ranges = []   # [(start_line_0based, end_line_0based), ...]
         self._stmt_highlight.connect(self._apply_statement_colors)
@@ -168,6 +171,7 @@ class ScriptEditor(QWidget):
         btn_layout.addWidget(self.stop_button)
         btn_layout.addWidget(self.save_button)
         btn_layout.addWidget(self.load_button)
+        btn_layout.addWidget(self.help_button)
 
         self.name_label = QLabel()
         self.name_label.setTextFormat(Qt.TextFormat.PlainText)
@@ -939,6 +943,14 @@ class ScriptEditor(QWidget):
         self.log_callback(f"[{name}] Renamed from '{old}'.")
         return True
 
+    def show_help(self):
+        """Open (or bring to the front) the non-modal pop-up of script functions."""
+        if self._help_dialog is None:
+            self._help_dialog = ScriptHelpDialog(self)
+        self._help_dialog.show()
+        self._help_dialog.raise_()
+        self._help_dialog.activateWindow()
+
     def request_rename(self):
         """✏️ Rename button: ask for a new name; a name used by another tab is refused."""
         if self.is_active():
@@ -1015,7 +1027,7 @@ class ScriptManager(QWidget):
         while not self.name_is_free(name):
             name = f"Script {self.tab_counter}"
             self.tab_counter += 1
-        return self._create_tab(name, SCRIPT_TEMPLATE)
+        return self._create_tab(name)
 
     def open_script_tab(self, filepath, content):
         """Open a script loaded from disk in a new tab named after the file."""
