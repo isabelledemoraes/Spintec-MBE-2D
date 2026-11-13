@@ -254,6 +254,14 @@ def check_commands(ctx: CompileContext) -> list[CompileMessage]:
     return errors
 
 
+def check_not_empty(ctx: CompileContext) -> list[CompileMessage]:
+    """A script with no command (empty or only comments) would do nothing."""
+    if ctx.tree.body:
+        return []
+    return [CompileMessage(Level.WARNING, None,
+                           "The script contains no commands (empty or only comments).")]
+
+
 def check_statements(ctx: CompileContext) -> list[CompileMessage]:
     """
     Every top-level statement must be a single DSL command call.
@@ -862,6 +870,7 @@ def check_time_estimate(ctx: CompileContext) -> list[CompileMessage]:
 
 # Registry: every check runs on each compilation. Append new checks here.
 CHECKS: list[Check] = [
+    check_not_empty,
     check_statements,
     check_commands,
     check_call_arguments,

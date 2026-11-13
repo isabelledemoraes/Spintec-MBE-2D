@@ -234,6 +234,9 @@ QThread → EurothermWorker.run() → data_ready signal
   error ✅. Open: Compile does not warn about lost instruments; other script functions on a lost
   instrument unchanged (`wait_until_temperature` returns on a read error and the script continues,
   `power_ramp` logs and continues)
+- Script template: a NEW tab (not Load) opens with `script_template.SCRIPT_TEMPLATE`, one `#` comment
+  line per DSL function (syntax + units); `check_not_empty` gives a Compile WARNING for a script
+  with no command ✅ — Qt tests (`tests/test_script_template.py`) not run in the cloud (no libEGL)
 - Pressure gauge: simulated OK; real COM10 not yet tested end-to-end
 - `gui_main.py` uses a relative import `.GUIv5` — will fail if run directly; use `watchdog.py`
 

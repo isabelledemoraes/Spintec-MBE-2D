@@ -19,6 +19,7 @@ from addresses import addresses
 from script_compiler import compile_script, Level
 from ramp_planning import plan_ramp_segments
 from pressure_interlock import InterlockError
+from script_template import SCRIPT_TEMPLATE
 
 
 def _unique_name(name: str, is_free) -> str:
@@ -128,7 +129,7 @@ class ScriptEditor(QWidget):
         self._hw_wait_items = []  # [(loop_id, finish_datetime), ...] populated by temperature_ramp
 
         self.editor = QPlainTextEdit()
-        self.editor.setPlainText("""temperature_ramp(\"Au\", 300, 10)\nhold(1)\ntemperature_ramp(\"Au\", 25, 10)""")
+        # Starts empty; ScriptManager.add_new_tab fills in the commented function list.
 
         self.compile_button = QPushButton("Compile")
         self.compile_button.clicked.connect(self.compile_current)
@@ -1014,7 +1015,7 @@ class ScriptManager(QWidget):
         while not self.name_is_free(name):
             name = f"Script {self.tab_counter}"
             self.tab_counter += 1
-        return self._create_tab(name)
+        return self._create_tab(name, SCRIPT_TEMPLATE)
 
     def open_script_tab(self, filepath, content):
         """Open a script loaded from disk in a new tab named after the file."""
