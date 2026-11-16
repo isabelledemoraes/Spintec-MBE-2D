@@ -4,7 +4,7 @@
 
 | Requirement | Minimum | Where to get it |
 |---|---|---|
-| Python | 3.10 or newer (64-bit) | https://www.python.org/downloads/ |
+| Python | 3.11 or newer (64-bit) | https://www.python.org/downloads/ |
 | Windows | 10 or 11 | — |
 | NI-DAQmx driver | Latest | https://www.ni.com/en/support/downloads/drivers/download.ni-daqmx.html |
 
@@ -19,12 +19,14 @@
    share or `git clone`). Do **not** copy a `venv` folder from another PC:
    the installer creates a fresh one.
 2. Double-click **`install_windows.bat`**. It will:
-   - check Python (3.10+), create the isolated environment `venv` in the project folder
-   - install the packages from `requirements.txt` into it (nothing is installed globally)
+   - check Python (3.11+), create the isolated environment `venv` in the project folder
+   - install the exact tested versions from `requirements-lock.txt` (else `requirements.txt`) into it (nothing is installed globally)
    - check the NI-DAQmx driver, copy the `addresses.py` template if missing,
      run an import check and offer to create the desktop shortcut
 3. Edit **`addresses.py`** for this machine (see the checklist below).
 4. Double-click **`run.bat`** (or the desktop shortcut) to launch.
+
+To update the tested versions later, on the tested PC run `python -m pip freeze > requirements-lock.txt` and commit it.
 
 ### No internet on the instrument PC?
 

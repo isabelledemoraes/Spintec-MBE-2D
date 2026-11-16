@@ -6,7 +6,9 @@ REM folder (including "wheels") to the instrument PC and run install_windows.bat
 cd /d "%~dp0"
 
 python --version
-python -m pip download -r requirements.txt -d wheels
+set REQ=requirements.txt
+if exist requirements-lock.txt set REQ=requirements-lock.txt
+python -m pip download -r %REQ% -d wheels
 if errorlevel 1 (
     echo.
     echo  ERROR: download failed.

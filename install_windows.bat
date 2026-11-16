@@ -13,14 +13,14 @@ echo ============================================================
 echo   Project folder: %CD%
 echo.
 
-REM -- Step 1: Check Python (3.10 or newer: numpy 2.1 needs it) ----------------
+REM -- Step 1: Check Python (3.11 or newer: pandas 3 needs it) ----------------
 echo [1/9] Checking Python installation...
 python --version >nul 2>&1
 if errorlevel 1 (
     echo.
     echo  ERROR: Python not found on PATH.
     echo.
-    echo  Please install Python 3.10 or newer from:
+    echo  Please install Python 3.11 or newer from:
     echo    https://www.python.org/downloads/
     echo.
     echo  IMPORTANT: During installation, tick "Add Python to PATH"
@@ -28,11 +28,11 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>&1
 if errorlevel 1 (
     for /f "tokens=2" %%v in ('python --version 2^>^&1') do set PYVER=%%v
     echo.
-    echo  ERROR: Python !PYVER! is too old. Python 3.10 or newer is required.
+    echo  ERROR: Python !PYVER! is too old. Python 3.11 or newer is required.
     echo.
     pause
     exit /b 1
@@ -81,7 +81,11 @@ if exist wheels\ (
 
 echo.
 echo [5/9] Installing Python packages ^(this may take a few minutes^)...
-python -m pip install !PIP_ARGS! -r requirements.txt
+REM Exact tested versions if requirements-lock.txt exists, else requirements.txt.
+set REQ=requirements.txt
+if exist requirements-lock.txt set REQ=requirements-lock.txt
+echo  Using !REQ!
+python -m pip install !PIP_ARGS! -r !REQ!
 if errorlevel 1 (
     echo.
     echo  ERROR: Package installation failed. Check your internet connection
