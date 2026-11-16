@@ -40,4 +40,4 @@ pandas>=2.0
 #    If nidaqmx is absent the shutter controller silently simulates (safe to run).
 #    Installing it without the NI driver is harmless: DAQ errors are caught and
 #    logged.
-nidaqmx
+nidaqmx==1.7.0

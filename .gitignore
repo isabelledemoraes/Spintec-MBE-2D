@@ -33,3 +33,6 @@ build/
 *.spec
 # Run archive (#9) — script + compile report saved at each Run
 run_archive/
+
+# Offline install packages (make_offline_wheels.bat) - large, machine/Python specific
+wheels/
