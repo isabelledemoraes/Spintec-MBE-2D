@@ -21,10 +21,11 @@
 2. Double-click **`install_windows.bat`**. It will:
    - check Python (3.11+), create the isolated environment `venv` in the project folder
    - install the exact tested versions from `requirements-lock.txt` (else `requirements.txt`) into it (nothing is installed globally)
-   - check the NI-DAQmx driver, copy the `addresses.py` template if missing,
-     run an import check and offer to create the desktop shortcut
-3. Edit **`addresses.py`** for this machine (see the checklist below).
-4. Double-click **`run.bat`** (or the desktop shortcut) to launch.
+   - check the NI-DAQmx driver, create `config\machine.yaml` if it is missing
+     (from a former `addresses.py` if there is one, else from the example, in
+     simulation mode), run an import check and offer to create the desktop shortcut
+3. Double-click **`run.bat`** (or the desktop shortcut) to launch.
+4. Open the **⚙ Configuration** tab and set the machine up (see the checklist below).
 
 To update the tested versions later, on the tested PC run `python -m pip freeze > requirements-lock.txt` and commit it.
 
@@ -35,24 +36,28 @@ To update the tested versions later, on the tested PC run `python -m pip freeze 
 2. Copy the whole project folder, including `wheels`, to the instrument PC.
 3. Run `install_windows.bat` there: when `wheels` exists, it installs from it only.
 
-### Before the first real run: checklist for `addresses.py`
+### Before the first real run: configuration checklist
 
-`addresses.py` is machine-specific and not in Git: never copy the one from a
-test laptop. The installer copies `config/addresses.py.example` if it is missing.
+The configuration of a machine is one file, **`config\machine.yaml`**. It is
+machine-specific and not in Git: never copy the one from a test laptop.
+It is edited from the program, in the **⚙ Configuration** tab (password
+protected), or by hand with a text editor (`config\machine.example.yaml`
+explains every key).
 
-- [ ] `SIMULATION = False` (True = fake instruments)
-- [ ] COM ports, Modbus slave ids and NI device name (Dev1...) of this machine
-- [ ] `MACHINE_NAME` and `SCRIPT_ARCHIVE_DIR`: **Run is blocked until both are set**
-- [ ] `max_temp` (and `min_temp`) of every loop: scripts using a loop without them do not compile
-- [ ] Pressure gauge set to mbar, `"unit": "mbar"` and the `pressure_interlock` entry on Liquid_N2
+- [ ] **Machine → Simulation mode** unchecked (checked = fake instruments)
+- [ ] **Machine → Machine name** and **Archive folder**: **Run is blocked until both are set**
+- [ ] COM port, Modbus slave and NI-DAQ line of every cell; NI device name (Dev1...)
+- [ ] **Max temperature** (and min) of every cell: scripts and "Set temperature"
+      are refused on a cell without it
+- [ ] Pressure gauge set to mbar, unit `mbar`, and the pressure interlock of Liquid_N2
 - [ ] NI-DAQmx driver installed (the installer warns if not)
 
-Then start in `SIMULATION = True` once if you want to check the install without
-touching the instruments, and switch to `False` afterwards.
+A fresh install starts in simulation mode, so the program can be checked
+without touching the instruments. Uncheck it when the configuration is done.
 
 ---
 
-## Configuring Instrument Addresses
+## Configuring the Machine
 
 ### Step 1 — Find your COM ports
 
@@ -71,40 +76,59 @@ Typical setup:
 2. Expand **My System → Devices and Interfaces**
 3. Find your DAQPad / NI USB device — it will show a name like **Dev1**
 
-### Step 3 — Edit addresses.py
+### Step 3 — Open the ⚙ Configuration tab
 
-Open `addresses.py` in Notepad or any text editor and update the values:
+1. Start MBE Control and click the **⚙ Configuration** tab.
+2. First access: choose the password that protects this area. Afterwards the
+   password is asked each time; the tab locks itself when you leave it.
+3. Pick an entry on the left and edit it on the right:
 
-```python
-# For each Eurotherm controller, change the COM port:
-"device": ("COM1", 1),   # ("your_port", modbus_slave_id)
+| Entry | What you set |
+|---|---|
+| **Machine** | machine name, simulation mode, run archive folder, absolute max ramp rate |
+| **Pressure gauge** | enabled, serial port and frame, read command (`DS IG1 \r\n`), unit |
+| **NI-DAQ** | device name (Dev1), number of ports set LOW at startup |
+| **Cells** (one per Eurotherm) | name, COM port, Modbus slave, shutter line, limits, critical zone, Modbus registers |
+| **Shutters** | name, button label, NI-DAQ line, pressure interlock (limit, bypass) |
 
-# For the pressure gauge:
-"device": ("COM10", 300),  # ("your_port", baud_rate)
+   **+ Cell** / **+ Shutter** add an entry, **Duplicate** copies the selected
+   one, **↑ ↓** change the display order, **Delete** removes it.
+4. **Save** checks every value (nothing is written if one is wrong), keeps the
+   previous file as `machine.yaml.bak` and logs each changed value.
+   **Save and restart** also restarts the program: a change takes effect at
+   the next start. Restart is refused while a script is running.
 
-# For shutters (NI-DAQmx):
-"shutter_line": "Dev1/port0/line2"   # "DevX/portY/lineZ"
+Notes:
+
+- The **name** of a cell is what scripts use (`temperature_ramp("Au", ...)`) and
+  the name of its CSV columns: renaming a cell means updating the scripts.
+- **Write the setpoint directly** (cell → Temperature changes): a temperature
+  change only writes the setpoint, no ramp rate (mbe1: Se1, Se2 — mbe2:
+  Te-Cracker, Te-Tube).
+- **Keep the ramp generator state**: a ramp skips the "ramp generator OFF"
+  safety step and restores the previous state afterwards (mbe2: Te-Res).
+- Switching simulation off, bypassing or removing a pressure interlock must
+  be confirmed when saving.
+
+### Forgotten password
+
+Only a salted hash of the password is stored, in `config\machine.yaml`. To
+reset it, close the program, open that file in a text editor and set
+
+```yaml
+security:
+  password: null
 ```
 
-### Step 4 — Machine-specific settings
+The program asks for a new password at the next access. (The password keeps
+operators out of the settings; it does not protect the file itself.)
 
-Everything that differs between machines lives in `addresses.py`, so the
-code itself is identical on every PC. See `config/addresses.py.example`
-for details.
+### Coming from a version with `addresses.py`
 
-| Setting | Where | Default |
-|---|---|---|
-| `SIMULATION = False` | top of the file | `True` (simulated instruments) |
-| `"command": "DS IG1 \r\n"` | `"Pressure"` entry | `DS IG1` |
-| `"script_direct_setpoint": True` | an Eurotherm loop | off |
-| `"script_keep_ramp_generator": True` | an Eurotherm loop | off |
-
-- **`script_direct_setpoint`** — in scripts, `temperature_ramp()` only writes
-  the setpoint, like the GUI **Set** button (mbe1: Se1, Se2 — mbe2:
-  Te-Cracker, Te-Tube).
-- **`script_keep_ramp_generator`** — in scripts, `temperature_ramp()` skips
-  the "ramp generator OFF" safety interlock and restores its previous state
-  afterwards (mbe2: Te-Res).
+Nothing to do: at the first start (or when `install_windows.bat` runs), an
+existing `addresses.py` is converted to `config\machine.yaml` with the same
+values. `addresses.py` is left untouched and is no longer read; keep it as a
+backup or delete it.
 
 ---
 
@@ -127,9 +151,17 @@ python watchdog.py
 > and start a new script if needed.
 
 **Simulation mode (no instruments needed):**
-Set `SIMULATION = True` at the top of `addresses.py` (it is also the default
-when the line is missing). The window title then shows **[SIMULATION]** and
+Check **Simulation mode** in ⚙ Configuration → Machine (`machine.simulation: true`
+in `config\machine.yaml`; it is the default of a fresh install). The window
+title then shows **[SIMULATION]**, the General View shows a SIMULATION mark, and
 the GUI runs with simulated instrument data — useful for testing scripts offline.
+
+**General View:** one card per cell with the measured temperature in large
+digits, setpoint, ramp rate and power. **Set temperature**: type a target and a
+rate, the line below says what will happen (duration, critical zone) or why it
+is refused, then **Set**. The rules are those of scripts (`temperature_ramp`):
+limits of the cell, slow rate inside the critical zone. A cell used by a
+running script cannot be changed by hand.
 
 ---
 
@@ -150,12 +182,14 @@ simulated (no real movement).
 |---|---|---|
 | `Python not found` | Python not on PATH | Reinstall Python, tick "Add to PATH" |
 | `No module named PyQt6` | Packages not installed or wrong Python | Run `install_windows.bat`, then start with `run.bat` (it uses `venv`) |
-| `No module named addresses` | `addresses.py` missing | Copy `config/addresses.py.example` to `addresses.py` |
-| Run button does nothing / blocked | `MACHINE_NAME` / `SCRIPT_ARCHIVE_DIR` not set | Set both in `addresses.py` |
-| `FileNotFoundError: COM1` | Wrong COM port | Check Device Manager, update `addresses.py` |
+| `No module named yaml` | PyYAML not installed (older `venv`) | Run `install_windows.bat` again |
+| "configuration error" at startup | `config\machine.yaml` is not valid YAML | Fix the file, or restore `machine.yaml.bak` |
+| Run button does nothing / blocked | machine name / archive folder not set | ⚙ Configuration → Machine |
+| "Set" stays grey in the General View | no max temperature for this cell, or value out of limits | Read the line under the fields; ⚙ Configuration → cell → Limits |
+| `FileNotFoundError: COM1` | Wrong COM port | Check Device Manager, ⚙ Configuration → cell |
 | `minimalmodbus.NoResponseError` | Eurotherm not responding | Check RS-485 cable, Modbus slave address |
-| `Serial timeout on COM10` | Pressure gauge off or wrong port | Check gauge power, update `addresses.py` |
-| Software crashes on open | Missing `addresses.py` | Copy `config/addresses.py.example` → `addresses.py` and fill in ports |
+| `Serial timeout on COM10` | Pressure gauge off or wrong port | Check gauge power, ⚙ Configuration → Pressure gauge |
+| Configuration password forgotten | — | See "Forgotten password" above |
 | Shutters not moving | nidaqmx not installed | Install NI-DAQmx driver + `pip install nidaqmx` |
 
 ---
@@ -174,9 +208,9 @@ MBE2026/
 ├── mbe_icon.ico               Application icon
 ├── venv/                      Python environment (created by the installer, not in Git)
 ├── requirements.txt           Python package list
-├── addresses.py               YOUR instrument configuration (not in Git)
 ├── config/
-│   └── addresses.py.example   Template — copy to addresses.py
+│   ├── machine.yaml           YOUR machine configuration (not in Git)
+│   └── machine.example.yaml   Commented template
 ├── scripts/                   Saved experiment scripts
 └── logs/                      Instrument logs (auto-created)
 ```
@@ -189,4 +223,4 @@ If you receive an updated version of the project:
 
 1. Replace the project folder contents (or `git pull` if using Git)
 2. Run `install_windows.bat` again: it reuses `venv` and updates packages if needed
-3. Your `addresses.py` is preserved (it is never overwritten)
+3. Your `config\machine.yaml` is preserved (it is never overwritten by an update)

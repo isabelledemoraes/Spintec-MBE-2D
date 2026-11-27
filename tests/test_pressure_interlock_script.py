@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from PyQt6.QtWidgets import QApplication
 
-import addresses as addresses_module
+import machine_config as addresses_module
 import checkpoint_manager
 import script_editor_integration
 import shutter_controller

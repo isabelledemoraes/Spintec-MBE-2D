@@ -62,17 +62,17 @@ SOFTWARE_VERSION = detect_version()
 
 def archive_settings(config) -> tuple[str, str]:
     """
-    (machine name, absolute archive folder) from the addresses.py module `config`.
+    (machine name, absolute archive folder) from the machine configuration `config`.
     A relative folder is relative to the project folder, not the working directory.
     """
     machine = getattr(config, "MACHINE_NAME", None)
     if not isinstance(machine, str) or not machine.strip():
-        raise ArchiveError("MACHINE_NAME is not set in addresses.py "
-                           "(see config/addresses.py.example).")
+        raise ArchiveError("MACHINE_NAME is not set in machine.yaml "
+                           "(Configuration tab).")
     folder = getattr(config, "SCRIPT_ARCHIVE_DIR", None)
     if not isinstance(folder, str) or not folder.strip():
-        raise ArchiveError("SCRIPT_ARCHIVE_DIR is not set in addresses.py "
-                           "(see config/addresses.py.example).")
+        raise ArchiveError("SCRIPT_ARCHIVE_DIR is not set in machine.yaml "
+                           "(Configuration tab).")
     folder = os.path.join(PROJECT_DIR, os.path.expanduser(folder.strip()))
     return machine.strip(), os.path.normpath(folder)
 

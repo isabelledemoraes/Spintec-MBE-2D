@@ -20,7 +20,7 @@ from datetime import datetime
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
 
-import addresses as addresses_module
+import machine_config as addresses_module
 import checkpoint_manager
 import shutter_controller
 import GUIv5

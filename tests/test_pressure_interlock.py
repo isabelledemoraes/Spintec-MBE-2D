@@ -90,7 +90,7 @@ class CheckPressureTests(unittest.TestCase):
         for unit in ("Torr", "Pa", None):
             with self.subTest(unit=unit):
                 addr = addr_with(Pressure={**ADDR["Pressure"], "unit": unit})
-                self.assertBlocked(gauge, addresses=addr, contains="['unit'] must be 'mbar'")
+                self.assertBlocked(gauge, addresses=addr, contains="gauge unit must be 'mbar'")
         self.assertEqual(gauge.reads, 0)   # configuration refused before reading
 
     def test_interlock_found_by_line(self):
@@ -216,7 +216,7 @@ class CompileTests(unittest.TestCase):
         report = compile_script('open_shutter("Liquid_N2")', addr, now=self.NOW)
         self.assertTrue(report.ok)
         self.assertEqual([m.format() for m in report.messages],
-                         ["WARNING line 1: pressure interlock BYPASSED in addresses.py: "
+                         ["WARNING line 1: pressure interlock BYPASSED in machine.yaml: "
                           "Liquid_N2 opens without checking IG1"])
 
     def test_bad_configuration_is_an_error(self):
@@ -227,7 +227,7 @@ class CompileTests(unittest.TestCase):
         self.assertEqual(report.errors[0].line, 1)
         report = compile_script('open_shutter("Liquid_N2")',
                                 addr_with(Pressure={"unit": "Torr"}), now=self.NOW)
-        self.assertIn("['unit'] must be 'mbar'", report.errors[0].text)
+        self.assertIn("gauge unit must be 'mbar'", report.errors[0].text)
 
 
 if __name__ == "__main__":

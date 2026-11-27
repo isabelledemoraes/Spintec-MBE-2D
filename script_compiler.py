@@ -171,7 +171,7 @@ def check_commands(ctx: CompileContext) -> list[CompileMessage]:
                     elif arg1.value not in addresses or "temperature_pv" not in addresses[arg1.value]:
                         errors.append(_error(
                             node.lineno,
-                            f"Loop ID '{arg1.value}' not found as a Eurotherm loop in addresses.py."
+                            f"Loop ID '{arg1.value}' not found as a Eurotherm loop in machine.yaml."
                         ))
 
                     # Args 2 & 3: must be numbers
@@ -218,7 +218,7 @@ def check_commands(ctx: CompileContext) -> list[CompileMessage]:
                         ))
                     elif arg1.value not in addresses or "temperature_pv" not in addresses[arg1.value]:
                         errors.append(_error(
-                            node.lineno, f"Loop ID '{arg1.value}' not found in addresses.py."
+                            node.lineno, f"Loop ID '{arg1.value}' not found in machine.yaml."
                         ))
                     # Arg 2: target_temp (number)
                     if len(node.args) >= 2:
@@ -244,7 +244,7 @@ def check_commands(ctx: CompileContext) -> list[CompileMessage]:
                         if not info or "shutter_line" not in info:
                             errors.append(_error(
                                 node.lineno,
-                                f"Shutter ID '{shutter_id}' not found with 'shutter_line' in addresses.py."
+                                f"Shutter ID '{shutter_id}' not found with 'shutter_line' in machine.yaml."
                             ))
             except Exception:
                 errors.append(_error(
@@ -368,7 +368,7 @@ def _loop_arg(passed: dict, addresses: dict):
 def _required_limit(ctx: CompileContext, loop_id: str, key: str, line: int, errors: list):
     value = ctx.addresses[loop_id].get("limits", {}).get(key)
     if value is None:
-        errors.append(_error(line, f"No '{key}' limit defined for {loop_id} in addresses.py"))
+        errors.append(_error(line, f"No '{key}' limit defined for {loop_id} in machine.yaml"))
     return value
 
 
@@ -539,7 +539,7 @@ def check_critical_zones(ctx: CompileContext) -> list[CompileMessage]:
 def check_pressure_interlock(ctx: CompileContext) -> list[CompileMessage]:
     """
     INFO for each open_shutter on an interlocked line; ERROR if its configuration
-    is invalid; WARNING instead when the interlock is bypassed in addresses.py.
+    is invalid; WARNING instead when the interlock is bypassed in machine.yaml.
     """
     messages = []
     for line, name, node in iter_calls(ctx.tree):
@@ -555,7 +555,7 @@ def check_pressure_interlock(ctx: CompileContext) -> list[CompileMessage]:
         if is_bypassed(config):
             messages.append(CompileMessage(
                 Level.WARNING, line,
-                f"pressure interlock BYPASSED in addresses.py: {arg.value} opens without "
+                f"pressure interlock BYPASSED in machine.yaml: {arg.value} opens without "
                 f"checking {gauge_name(ctx.addresses)}"))
             continue
         problem = config_problem(ctx.addresses, config)
@@ -890,7 +890,7 @@ def compile_script(code: str, addresses: dict | None = None,
     `now` is the script start used by the time estimate (default: compile time).
     """
     if addresses is None:
-        from addresses import addresses
+        from machine_config import addresses
 
     try:
         tree = ast.parse(code)

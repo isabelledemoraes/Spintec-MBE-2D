@@ -116,49 +116,54 @@ if errorlevel 1 (
     echo  NI-DAQmx driver found. Shutter control enabled. OK.
 )
 
-REM -- Step 7: Configure addresses ---------------------------------------------
+REM -- Step 7: Machine configuration -------------------------------------------
 echo.
-echo [7/9] Checking instrument configuration...
-if exist addresses.py (
-    echo  addresses.py found. OK.
+echo [7/9] Checking machine configuration...
+if exist config\machine.yaml (
+    echo  config\machine.yaml found. OK.
 ) else (
-    if exist config\addresses.py.example (
-        copy config\addresses.py.example addresses.py >nul
+    if exist addresses.py (
+        echo  addresses.py found: it is converted to config\machine.yaml now
+        echo  ^(addresses.py itself is not modified and is no longer used^).
+    ) else (
         echo.
-        echo  NOTICE: addresses.py was not found - a template has been copied.
-        echo  You MUST edit addresses.py for THIS machine before using it:
+        echo  NOTICE: no configuration yet. config\machine.yaml is created from
+        echo  the example, in SIMULATION mode. Start MBE Control, open the
+        echo  "Configuration" tab ^(password protected^) and set for THIS machine:
         echo.
+        echo    - machine name and run archive folder  ^(Run is blocked until set^)
         echo    - COM ports, Modbus slave ids, NI device name ^(Dev1...^)
-        echo    - MACHINE_NAME and SCRIPT_ARCHIVE_DIR  ^(Run is blocked until set^)
-        echo    - max_temp / min_temp of every loop    ^(scripts need them^)
-        echo    - Pressure unit "mbar" + pressure_interlock ^(Liquid_N2^)
-        echo    - SIMULATION = False  ^(True = fake instruments^)
+        echo    - max / min temperature of every cell  ^(scripts and Set temperature^)
+        echo    - pressure gauge unit "mbar" + pressure interlock ^(Liquid_N2^)
+        echo    - simulation mode OFF                  ^(ON = fake instruments^)
         echo.
         echo  Use Device Manager to find COM port numbers.
         echo  See README_INSTALL.md for details.
         echo.
-    ) else (
-        echo  WARNING: addresses.py not found and no example template available.
-        echo  The software will not communicate with instruments until
-        echo  a valid addresses.py is present.
     )
 )
 
 REM -- Step 8: Sanity check ----------------------------------------------------
 echo.
 echo [8/9] Running sanity check...
-python -c "import PyQt6; import pyqtgraph; import numpy; import serial; import minimalmodbus; import plotly; import pandas; import webview; print('All core packages OK')"
+python -c "import PyQt6; import pyqtgraph; import numpy; import serial; import minimalmodbus; import plotly; import pandas; import webview; import yaml; print('All core packages OK')"
 if errorlevel 1 (
     echo  ERROR: Sanity check failed - one or more packages did not import correctly.
     pause
     exit /b 1
 )
-if exist addresses.py (
-    python -c "import addresses as a; print('  Machine:', a.MACHINE_NAME, '| Simulation:', getattr(a, 'SIMULATION', True), '| Archive:', a.SCRIPT_ARCHIVE_DIR); import sys; sys.exit(0 if (a.MACHINE_NAME and a.SCRIPT_ARCHIVE_DIR) else 2)"
-    if errorlevel 1 (
+REM Loading machine_config creates config\machine.yaml if it is missing.
+python -c "import sys, machine_config as m; print('  Configuration', m.LOAD_INFO or ('ERROR: ' + str(m.LOAD_ERROR))); print('  Machine:', m.MACHINE_NAME, '| Simulation:', m.SIMULATION, '| Archive:', m.SCRIPT_ARCHIVE_DIR); [print('  WARNING:', p) for p in m.validate(m.config)]; sys.exit(3 if m.LOAD_ERROR else 0 if (m.MACHINE_NAME and m.SCRIPT_ARCHIVE_DIR) else 2)"
+if errorlevel 3 (
+    echo.
+    echo  ERROR: config\machine.yaml cannot be used ^(see the message above^).
+    echo  MBE Control will not start until it is fixed.
+) else (
+    if errorlevel 2 (
         echo.
-        echo  WARNING: MACHINE_NAME and/or SCRIPT_ARCHIVE_DIR are not set in
-        echo  addresses.py. The software starts, but Run is blocked until they are.
+        echo  WARNING: the machine name and/or the run archive folder are not set.
+        echo  The software starts, but Run is blocked until they are
+        echo  ^(Configuration tab of MBE Control^).
     )
 )
 
@@ -184,6 +189,7 @@ echo    Option B - open a terminal in this folder, then:
 echo               call venv\Scripts\activate
 echo               python watchdog.py
 echo.
-echo  Before the first real run, finish addresses.py ^(see above^).
+echo  Before the first real run, finish the machine configuration:
+echo  "Configuration" tab of MBE Control ^(see above^).
 echo.
 pause

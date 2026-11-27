@@ -14,30 +14,37 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QThread
 from PyQt6.QtGui import QIcon
 from eurotherm_controller import EurothermController
-from addresses import addresses
+import machine_config
+from machine_config import addresses
 from log_manager import LogManager
 import shutter_controller
 from shutter_controller import ShutterController, initialize_daq_outputs, DAQ_NAME
-from connection_monitor import ConnectionMonitor, LOST, panel_text, frame_style
+from connection_monitor import ConnectionMonitor
 from pressure_interlock import InterlockError, bypassed_shutters
 from pressure_gauge_panel import PressureGaugePanel
 from pressure_gauge_controller import PressureGaugeController
 from data_updater_threaded import EurothermWorker, PressureWorker
 from script_editor_integration import ScriptManager
+from instrument_panel import InstrumentPanel, ShutterPanel, CardGrid
+from config_editor import ConfigTab
 import checkpoint_manager
-#from plot_tab import PlotTab
+import ui_theme as ui
 
 USE_SHUTTER_HARDWARE = True
-USE_PRESSURE_GAUGE = True
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SIMULATION MODE — set per machine in addresses.py (SIMULATION = False on the
-# instrument PC). Defaults to True when addresses.py does not define it.
+# Everything machine-specific comes from config/machine.yaml (machine_config.py):
+# instruments, ports, limits, shutters, NI-DAQ device, simulation mode.
+#
+# SIMULATION — machine.simulation in machine.yaml (false on the instrument PC).
 # When True: fake Eurotherm + pressure data, no serial ports needed.
-# When False: real Eurotherm (COM1 Modbus) + pressure gauge (COM10) required.
+# When False: real Eurotherm (Modbus) + pressure gauge required.
 # ─────────────────────────────────────────────────────────────────────────────
-import addresses as _machine_config
-SIMULATION = getattr(_machine_config, "SIMULATION", True)
+SIMULATION = machine_config.SIMULATION
+PRESSURE = machine_config.PRESSURE_KEY
+
+# Exit code asking watchdog.py to start the program again (configuration changed).
+RESTART_EXIT_CODE = 42
 
 if SIMULATION:
     from sim_controllers import SimEurothermController, SimPressureGaugeController
@@ -49,181 +56,17 @@ def make_controller(loop_id):
     return EurothermController(loop_id)
 
 
-
-PANEL_STYLE = "background-color: #f0f0f0; padding: 5px; border-radius: 8px;"
-SHUTTER_FRAME_STYLE = "background-color: #f8f8f8; padding: 5px; border-radius: 8px;"
-
-
-class InstrumentPanel(QFrame):
-    def __init__(self, name, controller=None, shutter_line=None, shutter_ctrl=None):
-        super().__init__()
-        self.name = name
-        self.controller = controller
-        self.setFrameStyle(QFrame.Shape.StyledPanel)
-        self.setObjectName("instrumentPanel")
-        self._conn_mark = None   # last connection mark shown (#12)
-        self.setStyleSheet(frame_style(PANEL_STYLE, "instrumentPanel", lost=False))
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        layout = QVBoxLayout(self)
-
-        self.name_label = QLabel(f"<b>{name}</b>")
-        self.temp_label = QLabel("Temp: -- °C")
-        self.setpoint_temp = QLabel("Target Temp: -- °C")
-        self.setpoint_power = QLabel("Target Power: -- %")
-        self.mode_label = QLabel("Mode: --")
-        self.power_label = QLabel("Power: -- %")
-        self.ramp_temp_value = QLabel("Ramp Temp: -- °C/min")
-        self.ramp_power_value = QLabel("Ramp Power: -- %/s")
-        self.status_dot = QLabel()
-        self.status_dot.setFixedSize(12, 12)
-        self.set_status_dot("grey")
-
-        self.toggle_btn = QPushButton("Details ▼")
-        self.toggle_btn.setCheckable(True)
-        self.toggle_btn.setChecked(False)
-        self.toggle_btn.clicked.connect(self.toggle_details)
-
-        self.setpoint_input = QLineEdit()
-        self.setpoint_input.setFixedWidth(60)
-        self.setpoint_input.setPlaceholderText("Set °C")
-        self.set_temp_btn = QPushButton("Set")
-        self.set_temp_btn.clicked.connect(self.set_temperature)
-
-        self.details_frame = QWidget()
-        details_layout = QHBoxLayout()
-        details_layout.addWidget(self.setpoint_input)
-        details_layout.addWidget(self.setpoint_power)
-        details_layout.addWidget(self.set_temp_btn)
-        self.details_frame.setLayout(details_layout)
-        self.details_frame.setVisible(False)
-
-        self.lock_label = QLabel("")
-        self.lock_label.setToolTip("")
-
-        # Connection status (#12): "⚠ No communication — last OK ..." / "Recovered at ..."
-        self.comm_label = QLabel("")
-        self.comm_label.setWordWrap(True)
-        self.comm_label.hide()
-
-        info_grid = QGridLayout()
-        info_grid.addWidget(self.name_label, 0, 0)
-        info_grid.addWidget(self.mode_label, 0, 1)
-        info_grid.addWidget(self.lock_label, 0, 2)
-        info_grid.addWidget(self.temp_label, 1, 0)
-        info_grid.addWidget(self.power_label, 1, 1)
-        info_grid.addWidget(self.setpoint_temp, 2, 0)
-        info_grid.addWidget(self.setpoint_power, 2, 1)
-        info_grid.addWidget(self.ramp_temp_value, 3, 0)
-        info_grid.addWidget(self.ramp_power_value, 3, 1)
-
-        layout.addLayout(info_grid)
-        layout.addWidget(self.comm_label)
-        layout.addWidget(self.toggle_btn)
-        layout.addWidget(self.details_frame)
-        layout.addWidget(self.status_dot)
-
-        self.shutter_line = shutter_line
-        self.shutter_ctrl = shutter_ctrl
-        self.shutter_state = False
-        self.shutter_btn = QPushButton("Shutter: CLOSED")
-        self.shutter_btn.setCheckable(True)
-        self.shutter_btn.setChecked(False)
-        self.shutter_btn.clicked.connect(self.toggle_shutter)
-        self.shutter_btn.setStyleSheet("background-color: lightcoral;")
-        layout.addWidget(self.shutter_btn)
-
-        if USE_SHUTTER_HARDWARE and self.shutter_ctrl and self.shutter_line:
-            real_state = self.shutter_ctrl.get_last_saved(self.name)
-            self.shutter_state = real_state
-            self.shutter_btn.setChecked(real_state)
-            self.update_shutter_style()
-
-    def set_locked(self, owner: str | None):
-        """Grey out controls and show lock icon when an instrument is in use by a script."""
-        locked = owner is not None
-        # The shutter button is locked separately (set_shutter_display), only
-        # when the script actually opens/closes this shutter.
-        self.setpoint_input.setEnabled(not locked)
-        self.set_temp_btn.setEnabled(not locked)
-        if locked:
-            self.lock_label.setText("🔒")
-            self.lock_label.setToolTip(f"Locked by {owner}")
-        else:
-            self.lock_label.setText("")
-            self.lock_label.setToolTip("")
-
-    def set_status_dot(self, color):
-        self.status_dot.setStyleSheet(f"background-color: {color}; border-radius: 6px;")
-
-    def set_connection(self, status):
-        """Red border + ⚠ + last OK time while lost; "Recovered" until acknowledged (#12)."""
-        lost = status.state == LOST
-        text = panel_text(status)
-        if (lost, text) == self._conn_mark:
-            return
-        self._conn_mark = (lost, text)
-        self.setStyleSheet(frame_style(PANEL_STYLE, "instrumentPanel", lost))
-        self.comm_label.setText(text)
-        self.comm_label.setStyleSheet(f"color: {'#b02a37' if lost else '#146c43'}; font-weight: bold;")
-        self.comm_label.setVisible(bool(text))
-        if lost:
-            self.set_status_dot("red")
-
-    def set_shutter_display(self, state: bool, owner: str | None):
-        """Show the real shutter state; disable the button while a script controls it."""
-        self.shutter_state = state
-        self.shutter_btn.setChecked(state)
-        self.update_shutter_style()
-        self.shutter_btn.setEnabled(owner is None)
-        self.shutter_btn.setToolTip(f"🔒 Controlled by {owner}" if owner else "")
-
-    def toggle_shutter(self):
-        requested = self.shutter_btn.isChecked()
-        if USE_SHUTTER_HARDWARE and self.shutter_ctrl and self.shutter_line:
-            try:
-                ok = self.shutter_ctrl.set_shutter(self.name, self.shutter_line, requested)
-            except InterlockError as e:
-                self.shutter_btn.setChecked(self.shutter_state)
-                print(f"[{self.name}] Shutter not opened: {e}")
-                QMessageBox.warning(self, "Pressure interlock", f"{self.name} not opened: {e}")
-                return
-            if not ok:
-                # Write failed: keep showing the previous (real) state.
-                self.shutter_btn.setChecked(self.shutter_state)
-                print(f"[{self.name}] Shutter write failed; state unchanged ({self.shutter_state})")
-                return
-        self.shutter_state = requested
-        self.update_shutter_style()
-        print(f"[{self.name}] Shutter state = {self.shutter_state}")
-
-    def update_shutter_style(self):
-        if self.shutter_state:
-            self.shutter_btn.setText("Shutter: OPEN")
-            self.shutter_btn.setStyleSheet("background-color: lightgreen;")
-        else:
-            self.shutter_btn.setText("Shutter: CLOSED")
-            self.shutter_btn.setStyleSheet("background-color: lightcoral;")
-
-    def toggle_details(self):
-        show = self.toggle_btn.isChecked()
-        self.details_frame.setVisible(show)
-        self.toggle_btn.setText("Hide ▲" if show else "Details ▼")
-
-    def set_temperature(self):
-        if not self.controller:
-            return
-        try:
-            value = float(self.setpoint_input.text())
-            self.controller.write_value(self.name, "temperature_setpoint", value)
-        except Exception as e:
-            print(f"[{self.name}] Failed to set temperature: {e}")
-
 class MainWindow(QMainWindow):
     def __init__(self, daq_init_ok=None):
         """daq_init_ok: result of initialize_daq_outputs() (NI-DAQ startup check, #12)."""
         super().__init__()
-        self.setWindowTitle("MBEControl-Se" + (" [SIMULATION]" if SIMULATION else ""))
-        self.resize(1000, 800)
+        machine = machine_config.MACHINE_NAME
+        self.setWindowTitle("MBE Control" + (f" — {machine}" if machine else "")
+                            + (" [SIMULATION]" if SIMULATION else ""))
+        self.resize(1180, 900)
+        self.setStyleSheet(ui.APP_STYLESHEET)
+        # Set by the Configuration tab: start the program again after closing.
+        self.restart_requested = False
 
         self.log_timer = QTimer(self)
         self.log_timer.timeout.connect(self.write_log_entry)
@@ -250,6 +93,7 @@ class MainWindow(QMainWindow):
 
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setContentsMargins(12, 8, 12, 4)
         self.setCentralWidget(widget)
 
         self.tabs = QTabWidget()
@@ -258,12 +102,34 @@ class MainWindow(QMainWindow):
         self.general_tab = QWidget()
         self.tabs.addTab(self.general_tab, "General View")
         _gen_outer = QVBoxLayout(self.general_tab)
+        _gen_outer.setContentsMargins(4, 10, 4, 4)
+        _gen_outer.setSpacing(10)
+
+        # Header strip: machine, simulation mark, chamber pressure at a glance.
+        _head = QHBoxLayout()
+        _head.setSpacing(10)
+        self._machine_label = QLabel(machine or "Machine name not set")
+        self._machine_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._machine_label.setProperty("title", True)
+        _head.addWidget(self._machine_label)
+        if SIMULATION:
+            _sim = QLabel("SIMULATION")
+            _sim.setToolTip("Simulated instruments: nothing is sent to the real hardware.\n"
+                            "Change it in the Configuration tab (machine.simulation).")
+            _sim.setStyleSheet(ui.chip_style(ui.WARN, ui.WARN_SOFT))
+            _head.addWidget(_sim)
+        _head.addStretch()
+        self._pressure_chip = QLabel("")
+        self._pressure_chip.setTextFormat(Qt.TextFormat.RichText)
+        self._pressure_chip.hide()
+        _head.addWidget(self._pressure_chip)
+        _gen_outer.addLayout(_head)
 
         # Crash banner (issue #10): hidden unless the previous session crashed
         # during a script; stays until acknowledged. See _report_previous_crash.
         self._crash_banner = QFrame()
         self._crash_banner.setStyleSheet(
-            "QFrame { background-color: #fff3cd; border: 1px solid #e0a800; }"
+            "QFrame { background-color: #fff3cd; border: 1px solid #e0a800; border-radius: 8px; }"
             "QLabel { color: #664d03; font-weight: bold; border: none; }"
         )
         _banner_layout = QHBoxLayout(self._crash_banner)
@@ -281,7 +147,7 @@ class MainWindow(QMainWindow):
         # until acknowledged. See _update_connection_status.
         self._comm_banner = QFrame()
         self._comm_banner.setStyleSheet(
-            "QFrame { background-color: #f8d7da; border: 1px solid #dc3545; }"
+            "QFrame { background-color: #f8d7da; border: 1px solid #dc3545; border-radius: 8px; }"
             "QLabel { color: #842029; font-weight: bold; border: none; }"
         )
         _comm_layout = QHBoxLayout(self._comm_banner)
@@ -303,9 +169,10 @@ class MainWindow(QMainWindow):
 
         _gen_scroll = QScrollArea()
         _gen_scroll.setWidgetResizable(True)
-        _gen_content = QWidget()
-        self.general_layout = QGridLayout(_gen_content)
-        _gen_scroll.setWidget(_gen_content)
+        _gen_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # One card per Eurotherm loop, then the shutter card; columns follow the width.
+        self.card_grid = CardGrid()
+        _gen_scroll.setWidget(self.card_grid)
         _gen_outer.addWidget(_gen_scroll)
 
         self.log_mode_selector = QComboBox()
@@ -350,40 +217,37 @@ class MainWindow(QMainWindow):
         self.status_bar = self.statusBar()
         self.status_bar.showMessage("Ready.")
 
-        loop_ids = [
-            k for k, v in addresses.items()
-            if isinstance(v, dict)
-               and "temperature_pv" in v  # é um Eurotherm
-               and k not in ("Pressure",)  # exclui pressure
-        ]
-
-        for i, loop_id in enumerate(loop_ids):
+        for loop_id in machine_config.loop_ids(addresses):
             self.connection_monitor.add(loop_id)
+            ctrl = None
             try:
                 ctrl = make_controller(loop_id)
                 ctrl.connect()
                 self.controllers[loop_id] = ctrl
-                shutter_line = addresses[loop_id].get("shutter_line")
-                panel = InstrumentPanel(loop_id, ctrl, shutter_line, self.shutter_ctrl)
             except Exception as e:
+                ctrl = None
                 self.append_log(f"[{loop_id}] Controller init failed: {e}")
-                shutter_line = addresses[loop_id].get("shutter_line")
-                panel = InstrumentPanel(loop_id, None, shutter_line, self.shutter_ctrl)
-
+            panel = InstrumentPanel(
+                loop_id, ctrl, addresses[loop_id].get("shutter_line"), self.shutter_ctrl,
+                addresses=addresses, log=self.append_log,
+                use_shutter_hardware=USE_SHUTTER_HARDWARE)
             self.instrument_panels.append(panel)
-            self.general_layout.addWidget(panel, i // 3, i % 3)
+            self.card_grid.add_card(panel)
 
-        if USE_PRESSURE_GAUGE:
-            self.connection_monitor.add("Pressure")
+        # The gauge exists when the configuration has it (pressure_gauge.enabled).
+        if PRESSURE in addresses:
+            self.connection_monitor.add(PRESSURE)
+            self._pressure_unit = addresses[PRESSURE].get("unit") or ""
+            self._show_pressure(None)
             try:
-                pg_ctrl = SimPressureGaugeController("Pressure") if SIMULATION else PressureGaugeController("Pressure")
+                pg_ctrl = SimPressureGaugeController(PRESSURE) if SIMULATION else PressureGaugeController(PRESSURE)
                 pg_ctrl.connect()
-                pressure_panel = PressureGaugePanel("Pressure", pg_ctrl)
+                pressure_panel = PressureGaugePanel(PRESSURE, pg_ctrl)
                 # Pressure interlock (#8): without this, interlocked shutters stay closed.
                 self.shutter_ctrl.pressure_gauge = pg_ctrl
             except Exception as e:
                 self.append_log(f"[Pressure] Controller init failed: {e}")
-                pressure_panel = PressureGaugePanel("Pressure", None)
+                pressure_panel = PressureGaugePanel(PRESSURE, None)
 
             # Worker list — pressure panel stays here so EurothermWorker/PressureWorker dispatch works
             self.instrument_panels.append(pressure_panel)
@@ -399,8 +263,21 @@ class MainWindow(QMainWindow):
         self.add_global_shutter_panel()
 
         for sid in bypassed_shutters(addresses):
-            self.append_log(f"[Shutter] WARNING: pressure interlock BYPASSED in addresses.py "
+            self.append_log(f"[Shutter] WARNING: pressure interlock BYPASSED in machine.yaml "
                             f"for {sid}: it opens without pressure check.")
+
+        # System configuration (password protected): edits config/machine.yaml.
+        self.config_tab = ConfigTab(
+            log=self.append_log,
+            scripts_running=self.running_scripts,
+            request_restart=self.request_restart,
+        )
+        self._config_tab_index = self.tabs.addTab(self.config_tab, "⚙ Configuration")
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        if machine_config.LOAD_INFO:
+            self.append_log(f"[Config] Configuration {machine_config.LOAD_INFO}.")
+        for problem in machine_config.validate(machine_config.config):
+            self.append_log(f"[Config] WARNING: {machine_config.CONFIG_NAME}: {problem}")
 
         # After every instrument is registered: the startup check ends when all have reported.
         self._monitor_daq(daq_init_ok)
@@ -483,16 +360,10 @@ class MainWindow(QMainWindow):
                 panel.set_connection(status)
         daq = statuses.get(DAQ_NAME)
         if daq is not None:
-            lost = daq.state == LOST
-            text = panel_text(daq)
-            if (lost, text) != self._shutter_frame_mark:
-                self._shutter_frame_mark = (lost, text)
-                self._shutter_frame.setStyleSheet(
-                    frame_style(SHUTTER_FRAME_STYLE, "shutterFrame", lost))
-                self._daq_label.setText(f"{DAQ_NAME}: {text}" if text else "")
-                self._daq_label.setStyleSheet(
-                    f"color: {'#b02a37' if lost else '#146c43'}; font-weight: bold;")
-                self._daq_label.setVisible(bool(text))
+            self._shutter_frame.set_connection(DAQ_NAME, daq)
+        gauge = statuses.get(PRESSURE)
+        if gauge is not None and not gauge.answering:
+            self._show_pressure(None)       # never a stale pressure in the header
 
     def _acknowledge_comm(self):
         names = self.connection_monitor.acknowledge()
@@ -578,36 +449,15 @@ class MainWindow(QMainWindow):
         # In GUIv5.py, inside the MainWindow class
 
     def add_global_shutter_panel(self):
-        """Create a small frame with 3 global shutter buttons in the lower-left of the General View."""
-        from addresses import addresses  # already imported at top, but safe
-
-        frame = QFrame()
-        frame.setFrameStyle(QFrame.Shape.StyledPanel)
-        frame.setObjectName("shutterFrame")
-        frame.setStyleSheet(frame_style(SHUTTER_FRAME_STYLE, "shutterFrame", lost=False))
+        """Card with one button per shutter that is not tied to a Eurotherm loop."""
+        frame = ShutterPanel()
         self._shutter_frame = frame
-        self._shutter_frame_mark = None
+        self._daq_label = frame.daq_label
 
-        layout = QVBoxLayout(frame)
-        title = QLabel("<b>Shutters</b>")
-        layout.addWidget(title)
-        # NI-DAQ connection status (#12)
-        self._daq_label = QLabel("")
-        self._daq_label.setWordWrap(True)
-        self._daq_label.hide()
-        layout.addWidget(self._daq_label)
-
-        # Define shutters: label text, ID key in addresses["Shutters"]
-        shutters = [
-            ("Shutter Liquid N2", "Liquid_N2"),
-            ("Shutter e-gun1", "eGun1"),
-            ("Shutter e-gun2", "eGun2"),
-        ]
-
-        for label_text, shutter_id in shutters:
+        # (id, label) of every shutter-only entry of the configuration.
+        for shutter_id, label_text in machine_config.global_shutters(addresses):
             btn = QPushButton(f"{label_text}: CLOSED")
             btn.setCheckable(True)
-            btn.setStyleSheet("background-color: lightcoral;")
 
             # Restore last saved state (simulated or hardware)
             initial_state = self.shutter_ctrl.get_last_saved(shutter_id)
@@ -618,30 +468,24 @@ class MainWindow(QMainWindow):
                 lambda checked, sid=shutter_id, prefix=label_text, b=btn: self.toggle_global_shutter(sid, prefix, b, checked)
             )
 
-            layout.addWidget(btn)
+            frame.add_button(btn)
             self.global_shutter_buttons[shutter_id] = (btn, label_text)
 
-        #row = self.general_layout.rowCount()
-        #self.general_layout.addWidget(frame, row, 0, 1, 1)
-
-        # Put this frame in the lower-left of the grid (new last row, column 0)
-        row = self.general_layout.count() // 3
-        col = self.general_layout.count() % 3
-        self.general_layout.addWidget(frame, row, col)
+        self.card_grid.add_card(frame, full_width=True)
+        if not self.global_shutter_buttons:
+            frame.hide()
 
     def update_global_shutter_style(self, button: QPushButton, label_prefix: str, state: bool):
         """Update text and color of a global shutter button."""
-        if state:
-            button.setText(f"{label_prefix}: OPEN")
-            button.setStyleSheet("background-color: lightgreen;")
-        else:
-            button.setText(f"{label_prefix}: CLOSED")
-            button.setStyleSheet("background-color: lightcoral;")
+        text = f"{label_prefix}: {'OPEN' if state else 'CLOSED'}"
+        style = ui.shutter_style(state)
+        if button.text() != text:
+            button.setText(text)
+        if button.styleSheet() != style:
+            button.setStyleSheet(style)
 
     def toggle_global_shutter(self, shutter_id: str, label_prefix: str, button: QPushButton, state: bool):
         """Callback when a global shutter button is toggled."""
-        from addresses import addresses  # to access line names
-
         line_name = addresses.get(shutter_id, {}).get("shutter_line")
 
         print(f"[Global Shutter] {shutter_id} → {state} (line: {line_name})")
@@ -665,45 +509,82 @@ class MainWindow(QMainWindow):
         self.update_global_shutter_style(button, label_prefix, state)
 
     def handle_data_update(self, name, data):
-            for panel in self.instrument_panels:
-                if panel.name == name:
-                    # --- START OF MODIFICATION ---
+        for panel in self.instrument_panels:
+            if panel.name == name:
+                if isinstance(panel, PressureGaugePanel):
+                    if "P" in data:
+                        panel.update_pressure(data['P'])
+                        self._show_pressure(data['P'])
+                else:
+                    panel.update_data(data)
 
-                    # Check if the panel is a PressureGaugePanel and handle it separately
-                    if isinstance(panel, PressureGaugePanel):
-                        if "P" in data:
-                            panel.update_pressure(data['P'])
-                    else:
-                        # This is the existing logic for Eurotherm panels
-                        if "T" in data:
-                            panel.temp_label.setText(f"Temp: {data['T']:.1f} °C")
-                        if "P" in data:
-                            panel.power_label.setText(f"Power: {data['P']:.1f} %")
-                        if "SP_T" in data:
-                            panel.setpoint_temp.setText(f"Target Temp: {data['SP_T']:.1f} °C")
-                        if "SP_P" in data:
-                            panel.setpoint_power.setText(f"Target Power: {data['SP_P']:.1f} %")
-                        if "MODE" in data:
-                            panel.mode_label.setText(f"Mode: {data['MODE']}")
-                        if "Ramp_T" in data:
-                            panel.ramp_temp_value.setText(f"Ramp Temp: {data['Ramp_T']:.2f} °C/min")
-                        if "Ramp_P" in data:
-                            panel.ramp_power_value.setText(f"Ramp Power: {data['Ramp_P']:.2f} %/s")
+                # Universal status dot logic
+                if panel.controller:
+                    # For pressure, the dot is handled in update_pressure. For Eurotherm, it's green.
+                    if not isinstance(panel, PressureGaugePanel):
+                        panel.set_status_dot("green")
+                else:
+                    panel.set_status_dot("red")
 
-                    # Universal status dot logic
-                    if panel.controller:
-                        # For pressure, the dot is handled in update_pressure. For Eurotherm, it's green.
-                        if not isinstance(panel, PressureGaugePanel):
-                            panel.set_status_dot("green")
-                    else:
-                        panel.set_status_dot("red")
+                # Update latest_data for logging
+                for key, value in data.items():
+                    self.latest_data[f"{name}_{key}"] = value
+                break
 
-                    # --- END OF MODIFICATION ---
+    def _show_pressure(self, pressure):
+        """Chamber pressure in the General View header (None = no current value)."""
+        value = "—" if pressure is None else f"{pressure:.2e}"
+        if value == getattr(self, "_pressure_shown", None):
+            return
+        self._pressure_shown = value
+        self._pressure_chip.setText(
+            f'<span style="color:{ui.MUTED};">Pressure&nbsp;&nbsp;</span>'
+            f'<span style="font-size:13pt; font-weight:700;">{value}</span>'
+            f'<span style="color:{ui.MUTED};"> {self._pressure_unit}</span>')
+        self._pressure_chip.setStyleSheet(
+            f"background: {ui.SURFACE}; border: 1px solid {ui.BORDER}; "
+            f"border-radius: 10px; padding: 5px 12px;")
+        self._pressure_chip.show()
 
-                    # Update latest_data for logging
-                    for key, value in data.items():
-                        self.latest_data[f"{name}_{key}"] = value
-                    break
+    # ── Configuration tab ────────────────────────────────────────────────
+
+    def _on_tab_changed(self, index):
+        # Leaving the Configuration tab locks it again (edits in progress are kept).
+        if index != self._config_tab_index:
+            self.config_tab.lock()
+
+    def running_scripts(self) -> list[str]:
+        """Names of the scripts being executed."""
+        names = []
+        for i in range(self.script_tab.tabs.count()):
+            editor = self.script_tab.tabs.widget(i)
+            if hasattr(editor, "is_active") and editor.is_active():
+                names.append(editor.script_name)
+        return names
+
+    def request_restart(self) -> bool:
+        """Close the program and start it again (new configuration). False if refused."""
+        running = self.running_scripts()
+        if running:
+            QMessageBox.warning(
+                self, "Restart",
+                f"A script is running ({', '.join(running)}).\n"
+                f"Stop it or wait for its end, then restart.")
+            return False
+        # A manual ramp across a critical zone is written segment by segment by
+        # this program: restarting now would leave it at the zone boundary.
+        ramping = [p.name for p in self.instrument_panels
+                   if isinstance(p, InstrumentPanel) and p.follow_up_pending()]
+        if ramping:
+            QMessageBox.warning(
+                self, "Restart",
+                f"A manual ramp is crossing its critical zone ({', '.join(ramping)}): "
+                f"its next segment is not written yet.\nWait for its end, then restart.")
+            return False
+        self.append_log("[Config] Restart requested to apply the configuration.")
+        self.restart_requested = True
+        self.close()
+        return True
 
     def write_log_entry(self):
         """Periodically called by a QTimer to attempt logging."""
@@ -748,6 +629,14 @@ class MainWindow(QMainWindow):
                         editor.stop_script()   # sets stop_event; joins up to 2 s
                     except Exception:
                         pass
+
+        # Nothing polls or logs once the window is closed; manual ramps stop
+        # writing their next segments, like the scripts above.
+        self.log_timer.stop()
+        self._lock_poll_timer.stop()
+        for panel in getattr(self, "instrument_panels", []):
+            if isinstance(panel, InstrumentPanel):
+                panel.stop_follow_up()
 
         # 1) Stop workers and stop threads
         for thread, worker in getattr(self, "threads", []):
@@ -798,9 +687,21 @@ class MainWindow(QMainWindow):
         print(f"[Logging] Mode set to {mode}, filename: {filename if mode == 'Growth' else 'auto'}")
 
 
-if __name__ == "__main__":
-    import ctypes
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("MBEControl.2026")
+def main() -> int:
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("MBEControl.2026")
+    except Exception:
+        pass    # not on Windows
+    if machine_config.LOAD_ERROR:
+        # Never start on a configuration that could not be read: nothing is
+        # known about the machine. Exit code 0 so that the watchdog does not loop.
+        app = QApplication(sys.argv)
+        QMessageBox.critical(
+            None, "MBE Control — configuration error",
+            f"The machine configuration cannot be used:\n\n{machine_config.LOAD_ERROR}\n\n"
+            f"Fix {machine_config.CONFIG_PATH} (or restore its .bak copy) and start again.")
+        return 0
     daq_ok = initialize_daq_outputs()  # must be first DAQ call — sets all lines LOW
     app = QApplication(sys.argv)
     _icon = QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mbe_icon.ico"))
@@ -808,4 +709,15 @@ if __name__ == "__main__":
     window = MainWindow(daq_init_ok=daq_ok)
     window.setWindowIcon(_icon)
     window.show()
-    sys.exit(app.exec())
+    code = app.exec()
+    if window.restart_requested:
+        if os.environ.get("MBE_WATCHDOG"):
+            return RESTART_EXIT_CODE          # watchdog.py starts the program again
+        subprocess.Popen([sys.executable, os.path.abspath(__file__)],
+                         cwd=os.path.dirname(os.path.abspath(__file__)))
+        return 0
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

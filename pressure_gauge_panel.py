@@ -6,7 +6,7 @@ import time
 
 from connection_monitor import LOST, panel_text, frame_style
 
-PANEL_STYLE = "background-color: #f0f0f0; padding: 5px; border-radius: 8px;"
+PANEL_STYLE = "background-color: #ffffff; padding: 5px; border-radius: 8px;"
 
 
 class PressureGaugePanel(QFrame):
@@ -23,6 +23,7 @@ class PressureGaugePanel(QFrame):
 
         self.name_label = QLabel(f"<b>{name}</b>")
         self.pressure_label = QLabel("Pressure: --- mbar")
+        self.pressure_label.setStyleSheet("font-size: 20pt; font-weight: 600;")
         self.status_dot = QLabel()
         self.status_dot.setFixedSize(12, 12)
 
@@ -44,7 +45,8 @@ class PressureGaugePanel(QFrame):
         date_axis = pg.DateAxisItem(orientation='bottom')
         self.plot_widget = pg.PlotWidget(axisItems={'bottom': date_axis})
         self.plot_widget.getPlotItem().layout.setContentsMargins(10, 10, 10, 35)
-        self.plot_curve = self.plot_widget.plot(pen='y')
+        self.plot_widget.setBackground("w")
+        self.plot_curve = self.plot_widget.plot(pen=pg.mkPen("#2457D6", width=2))
         self.plot_widget.setLabel('left', 'Pressure', units='mbar')
         self.plot_widget.setLabel('bottom', 'Time')
         self.plot_widget.setLogMode(y=True)

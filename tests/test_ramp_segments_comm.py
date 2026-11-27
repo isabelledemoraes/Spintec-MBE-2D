@@ -17,9 +17,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from PyQt6.QtWidgets import QApplication
 
-import addresses as addresses_module
+import machine_config as addresses_module
 import checkpoint_manager
 import script_editor_integration
+import temperature_control
 from script_editor_integration import ScriptEditor
 from sim_controllers import SimEurothermController
 
@@ -86,6 +87,7 @@ class SegmentHoldTests(unittest.TestCase):
                               SimpleNamespace(MACHINE_NAME="test",
                                               SCRIPT_ARCHIVE_DIR=os.path.join(tmp.name, "archive"))),
             mock.patch.object(script_editor_integration, "time", FastTime()),
+            mock.patch.object(temperature_control, "time", FastTime()),   # segment poll
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

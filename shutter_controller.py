@@ -15,9 +15,10 @@ except Exception as _e:  # broad on purpose
     nidaqmx = None
     LineGrouping = None
 
-def initialize_daq_outputs(device: str = "Dev1") -> bool | None:
+def initialize_daq_outputs(device: str | None = None, ports: int | None = None) -> bool | None:
     """
-    Configure all USB-6501 ports as digital outputs and set all lines LOW.
+    Configure all ports of the NI device as digital outputs and set all lines LOW
+    (device and number of ports from machine.yaml: daq.device, daq.ports).
 
     Must be called before any other DAQmx task is created, to prevent the
     card's default high-impedance input state from floating shutter control
@@ -29,14 +30,18 @@ def initialize_daq_outputs(device: str = "Dev1") -> bool | None:
     if nidaqmx is None:
         print("[Shutter] nidaqmx not available — skipping DAQ output initialization.")
         return None
+    if device is None or ports is None:
+        import machine_config
+        device = device or machine_config.DAQ_DEVICE
+        ports = ports or machine_config.DAQ_PORTS
     try:
         with nidaqmx.Task() as task:
-            for port in range(3):  # port0, port1, port2
+            for port in range(ports):  # port0, port1, ...
                 task.do_channels.add_do_chan(
                     f"{device}/port{port}",
                     line_grouping=LineGrouping.CHAN_FOR_ALL_LINES,
                 )
-            task.write([0, 0, 0])  # All 24 lines LOW — shutters closed
+            task.write([0] * ports)  # every line LOW — shutters closed
         print(f"[Shutter] DAQ outputs initialized: all ports on {device} set LOW.")
         return True
     except Exception as e:
@@ -57,7 +62,7 @@ class ShutterController:
         # shutters cannot be opened. Set by MainWindow once the gauge exists.
         self.pressure_gauge = pressure_gauge
         if addresses_map is None:
-            from addresses import addresses as addresses_map
+            from machine_config import addresses as addresses_map
         self.addresses = addresses_map
         # ConnectionMonitor (issue #12): every NI-DAQ write is reported under
         # DAQ_NAME. Set by MainWindow; None = not monitored.
@@ -115,7 +120,7 @@ class ShutterController:
         if config is None:
             return
         if is_bypassed(config):
-            print(f"[Shutter] WARNING: pressure interlock BYPASSED (addresses.py) — "
+            print(f"[Shutter] WARNING: pressure interlock BYPASSED (machine.yaml) — "
                   f"{loop_id} opened without pressure check")
             return
         pressure = check_pressure(self.pressure_gauge, self.addresses, config)

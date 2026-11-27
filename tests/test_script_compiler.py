@@ -137,11 +137,11 @@ class TestCompile(unittest.TestCase):
         self.assertEqual(error_texts(
             'temperature_ramp("NoLim", 100, 5)\npower_ramp("NoLim", 10, 1)\n'
             'wait_until_temperature("NoLim", 100)\npower_ramp("NoMin", 10, 1)'),
-            ["ERROR line 1: No 'max_temp_rate' limit defined for NoLim in addresses.py",
-             "ERROR line 1: No 'max_temp' limit defined for NoLim in addresses.py",
-             "ERROR line 2: No 'power_ramp_allowed' limit defined for NoLim in addresses.py",
-             "ERROR line 3: No 'max_temp' limit defined for NoLim in addresses.py",
-             "ERROR line 4: No 'min_power_rate' limit defined for NoMin in addresses.py"])
+            ["ERROR line 1: No 'max_temp_rate' limit defined for NoLim in machine.yaml",
+             "ERROR line 1: No 'max_temp' limit defined for NoLim in machine.yaml",
+             "ERROR line 2: No 'power_ramp_allowed' limit defined for NoLim in machine.yaml",
+             "ERROR line 3: No 'max_temp' limit defined for NoLim in machine.yaml",
+             "ERROR line 4: No 'min_power_rate' limit defined for NoMin in machine.yaml"])
 
     def test_wait_until_temperature_limits(self):
         self.assertEqual(error_texts(

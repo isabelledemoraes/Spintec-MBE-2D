@@ -4,7 +4,7 @@ import logging
 import time
 from threading import Lock
 from base_instrument import BaseInstrument
-from addresses import addresses
+from machine_config import addresses
 
 # Global lock manager per port
 port_locks = {}
@@ -13,7 +13,7 @@ class EurothermController(BaseInstrument):
     def __init__(self, loop_id: str):
         self.loop_id = loop_id
         self.port, self.slave_address = addresses[loop_id]["device"]
-        self.baudrate = 9600
+        self.baudrate = addresses[loop_id].get("baudrate", 9600)
         self.instrument = None
         self.connected = False
 

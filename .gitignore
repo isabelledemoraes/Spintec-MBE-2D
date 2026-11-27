@@ -7,8 +7,12 @@ __pycache__/
 venv/
 .venv/
 
-# Real instrument addresses — NEVER commit (contains COM ports, device names)
-# Use config/addresses.py.example as the template
+# Real machine configuration — NEVER commit (contains COM ports, device names)
+# Template: config/machine.example.yaml (copied automatically at the first start)
+config/machine.yaml
+config/machine.yaml.bak
+config/machine.yaml.tmp
+# Former configuration file (converted to config/machine.yaml at the first start)
 addresses.py
 
 # Runtime state — machine-specific, regenerated on each run

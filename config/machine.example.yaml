@@ -1,0 +1,237 @@
+# MBE Control - machine configuration (EXAMPLE)
+# ─────────────────────────────────────────────────────────────────────────────
+# The real file is config/machine.yaml. It is created automatically at the
+# first start (from this example, or from a former addresses.py) and is NOT
+# in Git: it contains the COM ports and device names of ONE machine.
+#
+# Edit it from the program: "⚙ Configuration" tab (password protected), or
+# by hand with a text editor. A change takes effect at the next start.
+#
+# HOW TO FIND COM PORTS (Windows):  Device Manager → "Ports (COM & LPT)"
+# HOW TO FIND THE NI DEVICE NAME:   NI MAX → "Devices and Interfaces" (Dev1...)
+# ─────────────────────────────────────────────────────────────────────────────
+version: 1
+
+machine:
+  # Written in the header of every run report. Run is blocked until it is set.
+  name: null                    # ← SET, e.g. mbe1
+  # true  = simulated instruments, no serial port needed (development laptop)
+  # false = real Eurotherm, pressure gauge and NI-DAQ (instrument PC)
+  simulation: true              # ← false on the instrument PC
+  # At each Run the exact script and its compile report are saved here before
+  # execution. Relative = inside the MBEControl folder. Run is blocked until set.
+  script_archive_dir: null      # ← SET, e.g. D:\MBE\run_archive
+
+safety:
+  # Absolute cap applied to every temperature ramp at run time (°C/min),
+  # whatever the script or the per-cell limit says.
+  max_temp_rate_cap: 20.0
+
+daq:
+  device: Dev1                  # NI device driving the shutters  ← CHANGE
+  ports: 3                      # ports set LOW at startup (USB-6501: 3 ports = 24 lines)
+
+pressure_gauge:
+  enabled: true                 # false = no gauge (interlocked shutters cannot open)
+  port: COM10                   # ← CHANGE
+  baudrate: 300
+  bytesize: 7
+  stopbits: 2
+  command: "DS IG1 \r\n"        # ASCII command sent to read the pressure
+  unit: mbar                    # must match the gauge setting; the interlock requires mbar
+
+# ── Eurotherm loops (cells, substrate) ───────────────────────────────────────
+# The name is used everywhere: General View, scripts ( temperature_ramp("Au", ...) ),
+# CSV columns. Letters, digits and "-" only. The order here is the display order.
+#
+#   registers   Modbus [address, decimals]
+#   limits      checked by Compile and by "Set temperature"; an empty (null)
+#               limit that is needed blocks the command:
+#                 max_temp_rate       °C/min  max rate of a temperature ramp
+#                 power_ramp_allowed  power_ramp usable in scripts (cells: false)
+#                 min_power_rate      %/s     min rate of power_ramp
+#                 max_temp / min_temp °C      allowed targets (min_temp optional)
+#   critical_zone   range ramped at min(requested rate, slow_rate); null = none
+#   script_direct_setpoint      true = a ramp only writes the setpoint (no rate)
+#   script_keep_ramp_generator  true = the ramp generator state is restored
+eurotherms:
+  Au:
+    port: COM1
+    slave: 1
+    baudrate: 9600
+    shutter_line: Dev1/port0/line2      # null = no shutter
+    registers:
+      temperature_pv: [1, 1]
+      temperature_setpoint: [2, 1]
+      output_setpoint: [3, 1]
+      output_pv: [4, 1]
+      status: [273, 0]
+      Ramp_temp: [35, 1]
+      ramp_op_status: [87, 0]
+      Ramp_OP: [37, 2]
+    limits:
+      max_temp_rate: 15.0
+      power_ramp_allowed: false
+      min_power_rate: 0.01
+      max_temp: null                    # ← SET
+      min_temp: null
+    critical_zone:
+      range: [1014, 1114]               # Au melting point ~1064 °C
+      slow_rate: 3.0
+    thresholds: {temp_warning: 300, temp_critical: 400, power_warning: 60, power_critical: 80}
+    script_direct_setpoint: false
+    script_keep_ramp_generator: false
+
+  CaF2:
+    port: COM1
+    slave: 1
+    baudrate: 9600
+    shutter_line: Dev1/port0/line1
+    registers:
+      temperature_pv: [1025, 1]
+      temperature_setpoint: [1026, 1]
+      output_setpoint: [1027, 1]
+      output_pv: [1028, 1]
+      status: [1297, 0]
+      Ramp_temp: [1059, 1]
+      ramp_op_status: [1111, 0]
+      Ramp_OP: [1061, 2]
+    limits:
+      max_temp_rate: 15.0
+      power_ramp_allowed: false
+      min_power_rate: 0.01
+      max_temp: null                    # ← SET
+      min_temp: null
+    critical_zone: null
+    thresholds: {temp_warning: 300, temp_critical: 400, power_warning: 60, power_critical: 80}
+    script_direct_setpoint: false
+    script_keep_ramp_generator: false
+
+  Se1:
+    port: COM1
+    slave: 7
+    baudrate: 9600
+    shutter_line: Dev1/port0/line3
+    registers:
+      temperature_pv: [1, 1]
+      temperature_setpoint: [2, 1]
+      output_setpoint: [3, 1]
+      output_pv: [4, 1]
+      status: [273, 0]
+      Ramp_temp: [35, 1]
+      ramp_op_status: [87, 0]
+      Ramp_OP: [37, 2]
+    limits:
+      max_temp_rate: 15.0
+      power_ramp_allowed: false
+      min_power_rate: 0.01
+      max_temp: null                    # ← SET
+      min_temp: null
+    critical_zone: null
+    thresholds: {temp_warning: 300, temp_critical: 400, power_warning: 60, power_critical: 80}
+    script_direct_setpoint: true        # the setpoint is written directly
+    script_keep_ramp_generator: false
+
+  Se2:
+    port: COM1
+    slave: 5
+    baudrate: 9600
+    shutter_line: Dev1/port0/line6
+    registers:
+      temperature_pv: [1, 1]
+      temperature_setpoint: [2, 1]
+      output_setpoint: [3, 1]
+      output_pv: [4, 1]
+      status: [273, 0]
+      Ramp_temp: [35, 1]
+      ramp_op_status: [87, 0]
+      Ramp_OP: [37, 2]
+    limits:
+      max_temp_rate: 15.0
+      power_ramp_allowed: false
+      min_power_rate: 0.01
+      max_temp: null                    # ← SET
+      min_temp: null
+    critical_zone: null
+    thresholds: {temp_warning: 300, temp_critical: 400, power_warning: 60, power_critical: 80}
+    script_direct_setpoint: true
+    script_keep_ramp_generator: false
+
+  Substrate:
+    port: COM1
+    slave: 3
+    baudrate: 9600
+    shutter_line: null                  # no shutter
+    registers:
+      temperature_pv: [1, 1]
+      temperature_setpoint: [2, 1]
+      output_setpoint: [3, 1]
+      output_pv: [4, 1]
+      status: [273, 0]
+      Ramp_temp: [35, 1]
+      ramp_op_status: [87, 0]
+      Ramp_OP: [37, 2]
+    limits:
+      max_temp_rate: 20.0
+      power_ramp_allowed: true
+      min_power_rate: 0.01
+      max_temp: null                    # ← SET
+      min_temp: null
+    critical_zone: null
+    thresholds: {temp_warning: 300, temp_critical: 400, power_warning: 60, power_critical: 80}
+    script_direct_setpoint: false
+    script_keep_ramp_generator: false
+
+  SnSe:
+    port: COM1
+    slave: 2
+    baudrate: 9600
+    shutter_line: Dev1/port0/line4
+    registers:
+      temperature_pv: [1, 1]
+      temperature_setpoint: [2, 1]
+      output_setpoint: [3, 1]
+      output_pv: [4, 1]
+      status: [273, 0]
+      Ramp_temp: [35, 1]
+      ramp_op_status: [87, 0]
+      Ramp_OP: [37, 2]
+    limits:
+      max_temp_rate: 15.0
+      power_ramp_allowed: false
+      min_power_rate: 0.01
+      max_temp: null                    # ← SET
+      min_temp: null
+    critical_zone: null
+    thresholds: {temp_warning: 300, temp_critical: 400, power_warning: 60, power_critical: 80}
+    script_direct_setpoint: false
+    script_keep_ramp_generator: false
+
+# ── Other shutters (NI-DAQ digital outputs, not tied to a Eurotherm) ─────────
+# The name is used in scripts ( open_shutter("eGun1") ); the label is shown on
+# the General View button.
+#   pressure_interlock   opens only if the gauge reads strictly below
+#                        max_pressure_mbar (checked at each opening, script or
+#                        button). bypass: true opens WITHOUT any pressure check
+#                        (maintenance only). null = no interlock.
+shutters:
+  Liquid_N2:
+    label: Liquid N2
+    line: Dev1/port0/line7
+    pressure_interlock:
+      max_pressure_mbar: 1.0e-08
+      bypass: false
+  eGun1:
+    label: e-gun 1
+    line: Dev1/port1/line0
+    pressure_interlock: null
+  eGun2:
+    label: e-gun 2
+    line: Dev1/port1/line1
+    pressure_interlock: null
+
+# Password of the Configuration tab: defined from the program at the first
+# access (only a salted hash is stored). Forgotten password: set this back to
+# null, the program asks for a new one.
+security:
+  password: null

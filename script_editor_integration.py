@@ -14,10 +14,10 @@ import ast
 from html import escape
 import checkpoint_manager
 import script_archive
-import addresses as addresses_config   # module-level settings (MACHINE_NAME, SCRIPT_ARCHIVE_DIR)
-from addresses import addresses
+import machine_config as addresses_config   # MACHINE_NAME, SCRIPT_ARCHIVE_DIR
+from machine_config import addresses
 from script_compiler import compile_script, Level
-from ramp_planning import plan_ramp_segments
+from temperature_control import start_temperature_ramp
 from pressure_interlock import InterlockError
 from script_help import ScriptHelpDialog
 
@@ -28,11 +28,6 @@ def _unique_name(name: str, is_free) -> str:
     while not is_free(candidate):
         candidate, n = f"{name} ({n})", n + 1
     return candidate
-
-
-def _loop_flag(loop_id, key):
-    """Per-loop boolean option from addresses.py (False when absent)."""
-    return bool(addresses.get(loop_id, {}).get(key, False))
 
 
 # In script_editor_integration.py, at the top level
@@ -239,7 +234,7 @@ class ScriptEditor(QWidget):
         owner_id = f"{self.script_name}"
 
         def runner():
-            from addresses import addresses
+            from machine_config import addresses
 
             # --- START OF NEW LOCKING LOGIC ---
 
@@ -369,188 +364,16 @@ class ScriptEditor(QWidget):
                     self.log_callback(f"[{loop_id}] Error during ramp: {e}")
 
             def temperature_ramp(loop_id, target_temp, normal_rate_min):
+                # Same sequence as "Set temperature" in the General View
+                # (temperature_control.start_temperature_ramp).
                 if self.stop_event.is_set():
                     return
-                MAX_TEMP_RATE = 20.0
-                if normal_rate_min > MAX_TEMP_RATE:
-                    self.log_callback(f"[{loop_id}] WARNING: Requested rate capped at {MAX_TEMP_RATE}°C/min.")
-                    normal_rate_min = MAX_TEMP_RATE
-
-                ctrl = get_controller(loop_id)    # Special case: loops with "script_direct_setpoint"
-                # in addresses.py behave like the GUI "Set" button,
-                # i.e. just write the setpoint, no ramp generator / OP changes.
-                if _loop_flag(loop_id, "script_direct_setpoint"):
-                    self.log_callback(
-                        f"[{loop_id}] Using simple GUI-style temperature set: "
-                        f"writing setpoint to {target_temp}°C (no ramp logic, no ramp/OP changes)."
-                    )
-                    try:
-                        ctrl.write_value(loop_id, "temperature_setpoint", target_temp)
-                        self.log_callback(f"[{loop_id}] New temperature setpoint = {target_temp}°C.")
-                    except Exception as e:
-                        self.log_callback(f"[{loop_id}] Error setting temperature setpoint: {e}")
-                    return
-
-
-
-                self.log_callback(f"[{loop_id}] Planning temperature ramp to {target_temp}°C.")
-
-                # ------------------------------------------------------------------
-                # EXCEPTION: For loops with "script_keep_ramp_generator" in
-                # addresses.py we do NOT want to permanently disable
-                # the OP ramp / ramp generator. We remember the initial ramp state
-                # and restore it at the end instead of forcing it OFF.
-                # ------------------------------------------------------------------
-                skip_ramp_safety = _loop_flag(loop_id, "script_keep_ramp_generator")
-
-                try:
-                    initial_ramp_status = ctrl.get_ramp_status(loop_id)  # "on" or "off"
-                except Exception as e:
-                    self.log_callback(f"[{loop_id}] WARNING: Could not read initial ramp status: {e}")
-                    initial_ramp_status = None
-
-                # --- SAFETY INTERLOCK (skipped for "script_keep_ramp_generator" loops) ---
-                if not skip_ramp_safety:
-                    try:
-                        self.log_callback(f"[{loop_id}] Safety Interlock: Ensuring ramp generator is disabled.")
-                        ramp_disabled = False
-                        for i in range(3):
-                            ctrl.set_ramp_status(loop_id, False)
-                            status = ctrl.get_ramp_status(loop_id)
-                            if status == "off":
-                                ramp_disabled = True
-                                self.log_callback(f"[{loop_id}] Ramp generator successfully verified as OFF.")
-                                break
-                            self.log_callback(f"[{loop_id}] Verification failed (attempt {i + 1}/3). Retrying...")
-                            time.sleep(0.3)
-
-                        if not ramp_disabled:
-                            self.log_callback(
-                                f"[{loop_id}] CRITICAL: Failed to disable ramp generator. Aborting temperature ramp.")
-                            return
-
-                    except Exception as e:
-                        self.log_callback(
-                            f"[{loop_id}] CRITICAL: Failed to execute safety interlock. Aborting ramp. Error: {e}")
-                        return
-                else:
-                    self.log_callback(
-                        f"[{loop_id}] Se source detected → skipping ramp safety interlock (will restore state at the end)."
-                    )
-
-                try:
-                    # STEP 1: Ensure controller is in AUTO mode
-                    mode = ctrl.get_mode(loop_id)
-                    if mode != "auto":
-                        ctrl.set_mode(loop_id, "auto")
-                        self.log_callback(f"[{loop_id}] Switched to AUTO mode for temperature ramp.")
-
-                    current_temp = ctrl.read_value(loop_id, "temperature_pv")
-                    cz_config = addresses.get(loop_id, {}).get("critical_zone")
-
-                    # STEP 3: Plan the ramp segments (slowed inside the critical zone)
-                    ramp_segments = plan_ramp_segments(current_temp, target_temp,
-                                                       normal_rate_min, cz_config)
-
-                    if not ramp_segments:
-                        self.log_callback(f"[{loop_id}] Already at target temperature.")
-                        return
-
-                    total_duration_min = sum(seg.duration_min for seg in ramp_segments)
-
-                    finish_time = datetime.now() + timedelta(minutes=total_duration_min)
-                    self.log_callback(
-                        f"[{loop_id}] Ramp plan: {len(ramp_segments)} segment(s). Estimated duration: {total_duration_min:.1f} min.")
-                    self.log_callback(
-                        f"[{loop_id}] Estimated completion time: {finish_time.strftime('%H:%M:%S')}.")
-
-                    # STEP 4: Enable ramp generator for the temperature ramp
-                    self.log_callback(f"[{loop_id}] Enabling ramp generator for temperature ramp.")
-                    ctrl.set_ramp_status(loop_id, False)
-
-                    # ── Fire-and-return: write registers for the first segment,
-                    #    then immediately hand control back to the script.
-                    #    If the ramp crosses a critical zone (multiple segments),
-                    #    a daemon thread watches the PV and switches rates at each
-                    #    segment boundary without blocking the script thread.
-                    first_seg = ramp_segments[0]
-                    self.log_callback(
-                        f"[{loop_id}] Segment 1/{len(ramp_segments)}: "
-                        f"Ramping to {first_seg.target}°C at {first_seg.rate}°C/min.")
-                    ctrl.write_register(loop_id, "Ramp_temp", first_seg.rate)
-                    ctrl.write_value(loop_id, "temperature_setpoint", first_seg.target)
-
-                    if len(ramp_segments) > 1:
-                        remaining_segs = ramp_segments[1:]
-                        stop_ev       = self.stop_event
-                        n_total       = len(ramp_segments)
-
-                        def _continue_segments(segs, prev_target):
-                            for idx, seg in enumerate(segs, start=2):
-                                # Poll PV until the previous segment target is reached.
-                                # A failed read never moves on to the next segment:
-                                # keep waiting until the PV can be read again.
-                                read_failed = False
-                                while True:
-                                    if stop_ev.is_set():
-                                        return
-                                    try:
-                                        pv = ctrl.read_value(loop_id, "temperature_pv")
-                                    except Exception as e:
-                                        if not read_failed:
-                                            read_failed = True
-                                            self.log_callback(
-                                                f"[{loop_id}] Cannot read PV ({e}): segment {idx}/{n_total} "
-                                                f"held until communication is back.")
-                                    else:
-                                        if read_failed:
-                                            read_failed = False
-                                            self.log_callback(
-                                                f"[{loop_id}] PV readable again ({pv:.1f}°C): "
-                                                f"waiting for {prev_target}°C before segment {idx}/{n_total}.")
-                                        if abs(pv - prev_target) <= 3.0:
-                                            break
-                                    time.sleep(2)
-                                if stop_ev.is_set():
-                                    return
-                                self.log_callback(
-                                    f"[{loop_id}] Segment {idx}/{n_total}: "
-                                    f"Ramping to {seg.target}°C at {seg.rate}°C/min.")
-                                ctrl.write_register(loop_id, "Ramp_temp", seg.rate)
-                                ctrl.write_value(loop_id, "temperature_setpoint", seg.target)
-                                prev_target = seg.target
-
-                        threading.Thread(
-                            target=_continue_segments,
-                            args=(remaining_segs, first_seg.target),
-                            daemon=True,
-                        ).start()
-
-                    self.log_callback(
-                        f"[{loop_id}] Ramp to {target_temp}°C started "
-                        f"(est. {total_duration_min:.1f} min) — moving to next step.")
+                ctrl = get_controller(loop_id)
+                finish_time = start_temperature_ramp(
+                    ctrl, loop_id, target_temp, normal_rate_min,
+                    addresses=addresses, log=self.log_callback, stop_event=self.stop_event)
+                if finish_time is not None:
                     self._hw_wait_items.append((loop_id, finish_time))
-
-                except Exception as e:
-                    self.log_callback(f"[{loop_id}] Error during temperature ramp: {e}")
-                finally:
-                    # ------------------------------------------------------------------
-                    # FINALIZATION:
-                    #  - Normal loops: disable ramp generator (safety).
-                    #  - "script_keep_ramp_generator" loops: restore whatever the state
-                    #    was before the ramp.
-                    # ------------------------------------------------------------------
-                    if skip_ramp_safety:
-                        if initial_ramp_status is not None:
-                            self.log_callback(
-                                f"[{loop_id}] Finalizing sequence: restoring ramp generator to '{initial_ramp_status}'.")
-                            ctrl.set_ramp_status(loop_id, initial_ramp_status == "on")
-                        else:
-                            self.log_callback(
-                                f"[{loop_id}] Finalizing sequence: no initial ramp state → leaving ramp generator as-is.")
-                    else:
-                        self.log_callback(f"[{loop_id}] Finalizing sequence: Disabling ramp generator.")
-                        ctrl.set_ramp_status(loop_id, False)
 
             def hold(duration_min):
                 self.log_callback(f"Holding for {duration_min} min")
@@ -604,7 +427,7 @@ class ScriptEditor(QWidget):
             def wait_until_temperature(loop_id, target_temp, tolerance=0.5, timeout=None):
                 """
                 Wait until the PV temperature of loop_id reaches target_temp within tolerance.
-                - loop_id: instrument name as in addresses.py ("Substrate", ...)
+                - loop_id: instrument name as in machine.yaml ("Substrate", ...)
                 - target_temp: temperature to reach (°C)
                 - tolerance: acceptable difference (default ±0.5°C)
                 - timeout: max waiting time in seconds (None = no timeout)
@@ -663,7 +486,7 @@ class ScriptEditor(QWidget):
                 """
                 info = addresses.get(shutter_id)
                 if not info or "shutter_line" not in info:
-                    raise KeyError(f"Unknown shutter id '{shutter_id}' in addresses.py")
+                    raise KeyError(f"Unknown shutter id '{shutter_id}' in machine.yaml")
                 return shutter_id, info["shutter_line"]
 
             def _set_shutter(shutter_id: str, state: bool):

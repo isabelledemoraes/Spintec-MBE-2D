@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from PyQt6.QtWidgets import QApplication
 
-import addresses as addresses_module
+import machine_config as addresses_module
 import checkpoint_manager
 import script_editor_integration
 import shutter_controller
@@ -158,13 +158,13 @@ class RunArchiveTests(unittest.TestCase):
         del self.config.SCRIPT_ARCHIVE_DIR
         editor = self.editor()
         self.press_run(editor)
-        self.assert_blocked(editor, "SCRIPT_ARCHIVE_DIR is not set in addresses.py")
+        self.assert_blocked(editor, "SCRIPT_ARCHIVE_DIR is not set in machine.yaml")
 
     def test_machine_name_missing_blocks_run(self):
         self.config.MACHINE_NAME = None
         editor = self.editor()
         self.press_run(editor)
-        self.assert_blocked(editor, "MACHINE_NAME is not set in addresses.py")
+        self.assert_blocked(editor, "MACHINE_NAME is not set in machine.yaml")
 
     def test_compile_errors_nothing_saved(self):
         editor = self.editor('open_shutter("eGun1"\n')

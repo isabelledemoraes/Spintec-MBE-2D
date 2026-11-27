@@ -30,6 +30,7 @@ python-dateutil==4.0.0
 python-decouple==3.8
 pythonnet==3.2.1
 pywebview==6.2.1
+PyYAML==6.0.3
 requests==2.34.2
 typing_extensions==4.16.0
 tzdata==2026.6

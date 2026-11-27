@@ -3,7 +3,8 @@
 ## What this project is
 A PyQt6 desktop GUI (`GUIv5.py`) for controlling an MBE (Molecular Beam Epitaxy) deposition system.
 It talks to Eurotherm temperature controllers via Modbus/RS-485, NI-DAQ digital outputs for shutters,
-and a serial pressure gauge. There is also a live dashboard (`visu_window.py`, pywebview + Plotly)
+and a serial pressure gauge. The code is generic: everything machine-specific (cells, ports, registers,
+limits, shutters, gauge, NI device) is in `config/machine.yaml`, editable from the ⚙ Configuration tab. There is also a live dashboard (`visu_window.py`, pywebview + Plotly)
 launched as a subprocess; `visu_server.py` is an older standalone Plotly Dash version (not launched
 by the GUI, not kept in sync).
 
@@ -25,19 +26,48 @@ Entry points:
 | Shutters (Au/CaF2/Se1/Se2/SnSe) | NI-DAQ DO | Dev1/port0/line 1–6 | |
 | Liquid_N2, eGun1, eGun2 | NI-DAQ DO | Dev1/port0/line7, port1/line0–1 | Global shutters |
 
-Simulation mode: `SIMULATION = True` in `GUIv5.py` — uses `SimEurothermController` and
-`SimPressureGaugeController` from `sim_controllers.py`. Set to `False` on the instrument PC.
+The table above is the mbe1 example (`config/machine.example.yaml`); the real values of a machine
+are in its `config/machine.yaml`.
+
+Simulation mode: `machine.simulation: true` in `config/machine.yaml` (`GUIv5.SIMULATION`) — uses
+`SimEurothermController` and `SimPressureGaugeController` from `sim_controllers.py`. `false` on the
+instrument PC. A fresh install (file created from the example) starts in simulation.
+
+## Machine configuration (YAML)
+- `config/machine.yaml` (NOT in Git) is the single source of truth; `config/machine.example.yaml`
+  is the commented template. Sections: `machine` (name, simulation, script_archive_dir), `safety`
+  (max_temp_rate_cap), `daq` (device, ports), `pressure_gauge`, `eurotherms` (mapping name → port,
+  slave, baudrate, shutter_line, registers `[address, decimals]`, limits, critical_zone, thresholds,
+  script flags), `shutters` (name → label, line, pressure_interlock), `security` (password hash).
+- `machine_config.py` (no Qt) loads it ONCE at import and exposes `addresses` (runtime dict, same
+  layout as the former `addresses.py`: `to_addresses()`), `SIMULATION`, `MACHINE_NAME`,
+  `SCRIPT_ARCHIVE_DIR`, `DAQ_DEVICE`, `DAQ_PORTS`, `MAX_TEMP_RATE_CAP`, `config`. All modules import
+  from it (`from machine_config import addresses`). Env var `MBE_CONFIG` overrides the path.
+- `load_or_create()`: file exists → load; else a former `addresses.py` → converted (`migrate_legacy`,
+  old file untouched); else the example is copied. `LOAD_ERROR` set (unreadable YAML) → `GUIv5.main()`
+  shows a message box and exits with code 0 (no watchdog loop).
+- `normalize()` fills defaults (older files still load); `validate()` returns "where: what" lines;
+  `save()` refuses an invalid config, writes atomically, keeps `machine.yaml.bak`. PyYAML does not
+  keep comments: a file saved from the GUI only has the header comment.
+- Names: cells = letters/digits/`-` (no `_`: CSV columns are `<name>_<value>`, split by the
+  dashboard), shutters may have `_`; unique case-insensitively; `Pressure`, `NI-DAQ` reserved.
+  `"Pressure"` is the fixed key of the gauge (absent when `pressure_gauge.enabled` is false).
+- A change takes effect at the next start (nothing is hot-reloaded).
 
 ## Key files
 | File | Role |
 |---|---|
-| `addresses.py` | Single source of truth: Modbus register addresses, thresholds, shutter lines, critical zones |
+| `machine_config.py` | Loads `config/machine.yaml` → `addresses` dict + settings; validate / save / legacy conversion / password hash |
+| `config_editor.py` | ⚙ Configuration tab: `ConfigTab` (lock page ↔ editor), `ConfigEditor` (nav + form pages), fields without mouse-wheel edits |
+| `instrument_panel.py` | General View cards: `InstrumentPanel` (cell), `ShutterPanel`, `CardGrid` (columns follow the width) |
+| `temperature_control.py` | `start_temperature_ramp()` (run-time sequence shared by scripts and General View) + `check_manual_ramp()` (manual change checked by the compiler) |
+| `ui_theme.py` | Palette + `APP_STYLESHEET` (set on `MainWindow`), `shutter_style`, `chip_style`; variants via dynamic properties (`primary`, `card`, `caption`...) |
 | `eurotherm_controller.py` | Modbus R/W with per-port `threading.Lock`, 3-retry `safe_read/write_register` |
 | `pressure_gauge_controller.py` | Serial RS-232, shared `port_locks` per port |
 | `shutter_controller.py` | NI-DAQ digital output; persists state to `shutter_state.json` |
 | `sim_controllers.py` | Fake Eurotherm (time-based drift) + fake pressure gauge for dev/testing |
 | `base_instrument.py` | ABC: `connect`, `disconnect`, `read_value` |
-| `GUIv5.py` | `MainWindow` + `InstrumentPanel`; creates controllers, workers, threads; handles close |
+| `GUIv5.py` | `MainWindow`; creates controllers, workers, threads, tabs; `main()` (restart, config error); handles close |
 | `script_editor_integration.py` | `ScriptEditor` + `ScriptManager`; DSL execution engine |
 | `script_compiler.py` | Compile step: `compile_script()` runs every check in `CHECKS` → `CompileReport` (ERROR/WARNING) |
 | `script_archive.py` | Run archive (#9): `save_run()` writes script + compile report before execution; `ArchiveError` blocks Run |
@@ -47,7 +77,7 @@ Simulation mode: `SIMULATION = True` in `GUIv5.py` — uses `SimEurothermControl
 | `checkpoint_manager.py` | JSON crash record written before each script statement; `crash_message()` for the startup banner |
 | `visu_server.py` | Older standalone Plotly Dash dashboard (manual launch only) |
 | `visu_window.py` | Dashboard launched as subprocess by "📊 Dashboard" button; reads CSV logs; refreshes every 5 s; instruments have a Select all / Deselect all toggle; Pressure is not an instrument, it has its own plot ("Show" line) |
-| `watchdog.py` | Crash-restart wrapper; exit code 0 = clean quit |
+| `watchdog.py` | Crash-restart wrapper; exit code 0 = clean quit, 42 = restart asked by the Configuration tab (sets `MBE_WATCHDOG=1` for the app) |
 
 ## Script DSL (script_editor_integration.py)
 Scripts are plain text executed inside a sandboxed `exec()`. Allowed functions only:
@@ -66,14 +96,16 @@ wait_until("YYYY-MM-DD HH:MM")
 `active_script_locks` (module-level dict + `lock_manager_lock`). If a loop is already locked by
 another script, the run aborts. Locks are released in a `finally` block at end of run.
 
-**temperature_ramp behaviour**:
+**temperature_ramp behaviour** (`temperature_control.start_temperature_ramp`, also used by
+"Set temperature" in the General View):
 - Fire-and-return: writes first segment to hardware, then immediately returns to script thread.
 - Multi-segment ramps (critical zone crossing): a daemon thread (`_continue_segments`) polls PV
   and switches rate/setpoint at each segment boundary. A failed PV read never moves on: the next
   segment waits until the PV is readable AND within 3 °C of the previous target (logged once when
   lost, once when back).
-- Se1/Se2 exception: just writes temperature_setpoint, no ramp generator involvement.
+- Se1/Se2 exception (`script_direct_setpoint`): just writes temperature_setpoint, no ramp generator involvement.
 - Critical zone for Au: 1014–1114 °C, 3 °C/min forced through that range.
+- Rate capped at `safety.max_temp_rate_cap` (20 °C/min by default).
 
 **power_ramp behaviour**:
 - Switches controller to MANUAL mode.
@@ -93,10 +125,9 @@ Each check is a function `(CompileContext) -> list[CompileMessage(level, line, t
 then the summary line. Run is enabled only if the last report has 0 errors AND its `code` equals the
 current editor text; `run_script()` re-checks this. Editing the text marks the report outdated.
 
-**Limit checks** (#5): each Eurotherm loop in `addresses.py` has a `"limits"` dict
+**Limit checks** (#5): each Eurotherm loop of the configuration has a `"limits"` dict
 (`max_temp_rate` °C/min, `power_ramp_allowed` (False for cells), `min_power_rate` %/s, `max_temp` °C,
-optional `min_temp` °C; shared values
-come from `CELL_LIMITS` / `SUBSTRATE_LIMITS` / `EUROTHERM_LIMITS`, see `config/addresses.py.example`).
+optional `min_temp` °C; every loop has its own explicit values in `machine.yaml`).
 A limit missing or `None` for a loop used by the script is an ERROR. `temperature_ramp` rate must be
 > 0. Targets of `temperature_ramp` and `wait_until_temperature` are checked against `min/max_temp`.
 
@@ -132,7 +163,7 @@ Compile WARNING per opening, startup log line, console warning at each bypassed 
 refused, nothing saved. Then `_archive_run()` → `script_archive.save_run()` writes
 `YYYY-MM-DD_HH-MM-SS_<name>.txt` (exact executed text, UTF-8, `newline=""`) and `…_<name>_report.txt`
 (header: machine, Run time, git version, script name/file; then `format_lines()`)
-in `SCRIPT_ARCHIVE_DIR`, BEFORE locks/thread. Settings are top-level in `addresses.py`: `MACHINE_NAME`,
+in `SCRIPT_ARCHIVE_DIR`, BEFORE locks/thread. Settings come from `machine_config`: `MACHINE_NAME`,
 `SCRIPT_ARCHIVE_DIR` (relative = project folder, created if missing); missing/None/empty or any write
 error → `ArchiveError` → script NOT started + message box. Files opened in `"x"` mode (never overwrite;
 same name + same second → `_2`, `_3` on both); script file removed if the report fails. Name =
@@ -166,15 +197,38 @@ running. `set_name()` updates label + tab title (`name_changed` signal). Save re
 file (like Load); Load/Save/new-tab clashes get `name (2)`, `name (3)`…
 
 ## GUI structure
-- Tab 1: **General View** — grid of `InstrumentPanel` (one per Eurotherm); global shutter frame
+- Tab 1: **General View** — header (machine name, SIMULATION mark, pressure chip), banners, then a
+  `CardGrid` of `InstrumentPanel` (one per Eurotherm) + one `ShutterPanel` (shutters without a loop)
 - Tab 2: **Scripts** — `ScriptManager` with closable sub-tabs of `ScriptEditor`
-- Tab 3: **Pressure** — `PressureGaugePanel` with rolling log-scale plot
+- Tab 3: **Pressure** — `PressureGaugePanel` with rolling log-scale plot (only if a gauge is configured)
+- Last tab: **⚙ Configuration** — `ConfigTab`, password protected, locks itself when left
 - Log output strip at bottom (read-only `QTextEdit`, max 120 px)
 - Log mode bar: Standby / Growth + filename + Confirm + 📊 Dashboard button
 
-`InstrumentPanel.set_locked(owner)` — greys out setpoint input and Set button (loop lock);
-shows 🔒 icon with tooltip "Locked by {owner}". The shutter button is locked separately by
+**Instrument card** (`InstrumentPanel`): status dot, name, mode chip, 🔒 chip; measured temperature
+in large digits + trend chip (Heating / Cooling / At setpoint ±1 °C / Manual power); setpoint, ramp
+rate, power bar; **Set temperature** (target + rate + Set, no Details/Hide); shutter button (hidden
+when the loop has no `shutter_line`). `update_data(data)` shows one poll.
+
+**Set temperature**: `check_manual_ramp()` compiles `temperature_ramp(name, target, rate)` with
+`script_compiler` against the last polled PV (no Modbus read on the GUI thread) → same limits,
+critical-zone warning and duration as Compile; the hint line under the fields shows the result and
+"Set" is enabled only without error. Apply = `start_temperature_ramp()` in a daemon thread (logs via
+a Qt signal); the target field is cleared afterwards. Direct-setpoint loops have no rate field. A
+decimal comma is accepted. A new manual ramp stops the segment follow-up of the previous one; a
+script taking the loop lock stops it too (`follow_up_pending()` / `stop_follow_up()`), and
+`request_restart()` is refused while one is pending.
+
+`InstrumentPanel.set_locked(owner)` — disables the Set temperature fields (loop lock); shows a
+"🔒 owner" chip. The shutter button is locked separately by
 `set_shutter_display(state, owner)`, only when the script calls open/close_shutter on it.
+
+**Configuration tab** (`config_editor.py`): first access creates the password (salted PBKDF2 hash in
+`security.password`; reset = set it to `null` in the file). `ConfigEditor.collect()` → (config,
+problems); `save()` = collect + `validate` + confirmation of sensitive changes (simulation off,
+interlock bypassed/removed) + `machine_config.save` + one log line per changed value. Nothing is
+applied live: "Save and restart" → `MainWindow.request_restart()` (refused while a script runs) →
+exit code 42 under the watchdog, else relaunch. Tests replace `editor._ask` / `editor._warn`.
 
 ## Data flow
 ```
@@ -193,7 +247,9 @@ QThread → EurothermWorker.run() → data_ready signal
 ```
 
 ## Known patterns / conventions
-- All Modbus addresses in `addresses.py` as `(register, decimals)` tuples.
+- All Modbus addresses in `machine_config.addresses` as `(register, decimals)` tuples (YAML: `[register, decimals]`).
+- Never hardcode a cell name, port or limit in the code: read it from `machine_config`.
+- Tests patch the runtime dict in place: `mock.patch.dict(machine_config.addresses, ADDR, clear=True)`.
 - `read_value(loop_id, name)` and `write_value(loop_id, name, value)` look up address by name.
 - `write_register(loop_id, register_name, value)` is used for rate registers.
 - Threads are stored as `(QThread, Worker)` pairs in `self.threads`; cleaned up in `closeEvent`.
@@ -206,7 +262,7 @@ QThread → EurothermWorker.run() → data_ready signal
 - Instrument lock UI (🔒 icon + grey out): `set_locked()` on InstrumentPanel ✅
 - Compile framework (#4): Check + preview graph removed, Compile + per-tab report added ✅; next: #6–#9 plug into `CHECKS`
 - Ramp limit checks (#5): `check_ramp_rates` + `check_temperature_targets`; `power_ramp` 3rd arg is
-  now a rate in %/s ✅ — real `max_temp`/`min_temp` values still to be set in each machine's `addresses.py`
+  now a rate in %/s ✅ — real `max_temp`/`min_temp` values still to be set in each machine's configuration
 - Critical zone warnings (#6): shared `ramp_planning.py` + `temperature_timeline` + `check_critical_zones` ✅;
   runtime zone rate is now `min(rate, slow_rate)` — not yet tested on real hardware
 - Time estimate (#7): per-line durations, total, script end + last ramp end in the Compile report ✅;
@@ -220,9 +276,9 @@ QThread → EurothermWorker.run() → data_ready signal
   `active_shutter_locks` (separate from loop locks) and only those buttons are disabled; a failed
   shutter write stops the script ✅ — tested in simulation, not yet on real NI-DAQ
 - Pressure interlock (#8) ✅ in simulation — before real use: set the IG1 controller to mbar and
-  `"unit": "mbar"` + `pressure_interlock` in each machine's `addresses.py`; not yet tested on real gauge
+  unit `mbar` + pressure interlock in each machine's configuration; not yet tested on real gauge
 - Run archive (#9) ✅ — before real use: set `MACHINE_NAME` and `SCRIPT_ARCHIVE_DIR` in each machine's
-  `addresses.py` (Run is blocked until then); git may be absent on instrument PCs → version `unknown`
+  configuration (Run is blocked until then); git may be absent on instrument PCs → version `unknown`
 - Auto-resume removed (#10): "Session Recovery" dialog, `_resume_from`, `resume_from` in
   `script_archive` gone; crash banner in General View instead ✅. Open: a script *exception* (not a
   crash) also keeps the checkpoint, so the next start reports it as "ended unexpectedly"
@@ -239,9 +295,15 @@ QThread → EurothermWorker.run() → data_ready signal
   buttons. New tabs start empty (scripts stay clean). `check_not_empty` gives a Compile WARNING for
   a script with no command ✅ — Qt tests (`tests/test_script_help.py`) not run in the cloud (no libEGL)
 - Instrument-PC install: `install_windows.bat` (Python 3.11+, creates `venv`, installs `requirements-lock.txt` (exact tested versions, else `requirements.txt`), NI-DAQmx
-  check, copies the `addresses.py` template, import check, optional shortcut), `run.bat` (uses `venv`),
+  check, creates/checks `config\machine.yaml`, import check, optional shortcut), `run.bat` (uses `venv`),
   `make_offline_wheels.bat` + `wheels/` for a PC without internet; checklist in `README_INSTALL.md`.
   `.bat` files are CRLF (`.gitattributes`). Not yet run on a real Windows instrument PC
+- YAML configuration + ⚙ Configuration tab + General View redesign + Set temperature (branch `dev`) ✅
+  in simulation (tests: `test_machine_config`, `test_config_editor`, `test_general_view`,
+  `test_temperature_control`) — not yet run on an instrument PC: check the conversion of the real
+  `addresses.py` (gauge baud rate is now read from the file: the old code always used 300), and the
+  look on Windows (Segoe UI). `thresholds` are kept in the file but still unused. Open: a manual
+  multi-segment ramp is not resumed after a restart/crash (same as scripts)
 - Pressure gauge: simulated OK; real COM10 not yet tested end-to-end
 - `gui_main.py` uses a relative import `.GUIv5` — will fail if run directly; use `watchdog.py`
 

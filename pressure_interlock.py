@@ -2,7 +2,7 @@
 """
 Pressure interlock (issue #8).
 
-A shutter whose addresses.py entry has a "pressure_interlock" dict, e.g.
+A shutter whose machine.yaml entry has a "pressure_interlock" dict, e.g.
 
     "Liquid_N2": {"shutter_line": "Dev1/port0/line7",
                   "pressure_interlock": {"max_pressure_mbar": 1.0e-8}},
@@ -45,7 +45,7 @@ def is_bypassed(config) -> bool:
 
 
 def bypassed_shutters(addresses: dict) -> list[str]:
-    """IDs of the shutters whose pressure interlock is bypassed in addresses.py."""
+    """IDs of the shutters whose pressure interlock is bypassed in machine.yaml."""
     return [sid for sid, info in addresses.items()
             if isinstance(info, dict) and is_bypassed(info.get("pressure_interlock"))]
 
@@ -73,10 +73,10 @@ def config_problem(addresses: dict, config) -> str | None:
     """Why this interlock configuration cannot be used, or None if it is valid."""
     limit = config.get("max_pressure_mbar") if isinstance(config, dict) else None
     if not _is_positive_number(limit):
-        return f"'max_pressure_mbar' must be a positive number in addresses.py (got {limit!r})"
+        return f"'max_pressure_mbar' must be a positive number in machine.yaml (got {limit!r})"
     unit = addresses.get("Pressure", {}).get("unit")
     if unit != "mbar":
-        return f"addresses['Pressure']['unit'] must be 'mbar' (got {unit!r})"
+        return f"the pressure gauge unit must be 'mbar' in machine.yaml (got {unit!r})"
     return None
 
 

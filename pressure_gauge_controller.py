@@ -2,7 +2,7 @@
 from base_instrument import BaseInstrument
 import serial
 import threading
-from addresses import addresses
+from machine_config import addresses
 import time
 import logging
 
@@ -12,10 +12,13 @@ port_locks = {}
 class PressureGaugeController(BaseInstrument):
     def __init__(self, loop_id: str):
         self.loop_id = loop_id
-        self.port, _ = addresses[loop_id]["device"]
-        self.baudrate = 300
-        # Gauge channel command, e.g. "DS IG1 \r\n"; optional in addresses.py
-        self.command = addresses[loop_id].get("command", "DS IG1 \r\n").encode("ascii")
+        info = addresses[loop_id]
+        # ("COMx", baudrate); serial frame and command are optional (defaults: 7 data
+        # bits, 2 stop bits, "DS IG1").
+        self.port, self.baudrate = info["device"]
+        self.bytesize = info.get("bytesize", 7)
+        self.stopbits = info.get("stopbits", 2)
+        self.command = info.get("command", "DS IG1 \r\n").encode("ascii")
         self.ser = None
         self.connected = False
 
@@ -29,8 +32,8 @@ class PressureGaugeController(BaseInstrument):
             self.ser = serial.Serial(
                 port=self.port,
                 baudrate=self.baudrate,
-                bytesize=serial.SEVENBITS,
-                stopbits=serial.STOPBITS_TWO,
+                bytesize=self.bytesize,
+                stopbits=self.stopbits,
                 timeout=1
             )
             self.connected = True
