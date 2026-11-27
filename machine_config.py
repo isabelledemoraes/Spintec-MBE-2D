@@ -132,9 +132,12 @@ def _pair(value, default_decimals=0) -> list:
 
 def _normalize_eurotherm(raw) -> dict:
     raw, out = _dict(raw), default_eurotherm()
-    for key in ("port", "slave", "baudrate", "shutter_line", *SCRIPT_FLAGS):
+    for key in ("baudrate", "shutter_line", *SCRIPT_FLAGS):
         if key in raw:
             out[key] = raw[key]
+    # No default address in a loaded file: a missing port or slave is reported by
+    # validate(), never replaced by the address of another controller.
+    out["port"], out["slave"] = raw.get("port"), raw.get("slave")
     out["shutter_line"] = out["shutter_line"] or None
     registers = _dict(raw.get("registers"))
     # Known registers first (missing ones stay None and fail validation), then extras.
@@ -161,13 +164,17 @@ def _normalize_eurotherm(raw) -> dict:
 def _normalize_shutter(raw) -> dict:
     raw, out = _dict(raw), default_shutter()
     out["label"] = raw.get("label") or ""
-    out["line"] = raw.get("line", raw.get("shutter_line", out["line"]))
+    out["line"] = raw.get("line", raw.get("shutter_line"))    # missing: None, refused by validate()
     interlock = raw.get("pressure_interlock")
     if isinstance(interlock, dict):
         out["pressure_interlock"] = {
             "max_pressure_mbar": interlock.get("max_pressure_mbar"),
             "bypass": interlock.get("bypass", False),
         }
+    elif interlock is not None:
+        # Not a mapping: kept as written, so that validate() reports it and the
+        # interlock refuses to open (never read as "no interlock").
+        out["pressure_interlock"] = interlock
     return out
 
 
@@ -302,7 +309,10 @@ def validate(config: dict) -> list[str]:
               "name may only contain letters, digits, '-' and '_' (no space)")
         check(_text(shutter["line"]), where, "NI-DAQ line is required (e.g. Dev1/port0/line7)")
         interlock = shutter["pressure_interlock"]
-        if interlock is not None:
+        if interlock is not None and not isinstance(interlock, dict):
+            check(False, where, "pressure interlock must be a mapping "
+                                "(max_pressure_mbar: ..., bypass: ...); the shutter stays closed")
+        elif interlock is not None:
             limit = interlock.get("max_pressure_mbar")
             check(_is_number(limit) and limit > 0, where,
                   "pressure interlock limit must be a number > 0 (mbar)")
@@ -357,7 +367,8 @@ def to_addresses(config: dict) -> dict:
     for name, shutter in config["shutters"].items():
         entry = {"shutter_line": shutter["line"], "label": shutter["label"] or name}
         if shutter["pressure_interlock"] is not None:
-            entry["pressure_interlock"] = dict(shutter["pressure_interlock"])
+            interlock = shutter["pressure_interlock"]
+            entry["pressure_interlock"] = dict(interlock) if isinstance(interlock, dict) else interlock
         addresses[name] = entry
     return addresses
 
@@ -451,6 +462,16 @@ class _Dumper(yaml.SafeDumper):
 
 _Dumper.add_representer(list, _Dumper.represent_list)
 
+
+class _Loader(yaml.SafeLoader):
+    """Also reads 1e-8 and 1.2e3 as numbers (plain YAML 1.1 wants 1.0e-8 and 1.2e+3)."""
+
+
+_Loader.add_implicit_resolver(
+    "tag:yaml.org,2002:float",
+    re.compile(r"^[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)[eE][-+]?[0-9]+$"),
+    list("-+0123456789."))
+
 _HEADER = """\
 # MBE Control - machine configuration ({name})
 # Saved {when}.
@@ -476,7 +497,7 @@ def load(path: str = None) -> dict:
     path = path or CONFIG_PATH
     try:
         with open(path, "r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f)
+            raw = yaml.load(f, Loader=_Loader)
     except OSError as e:
         raise ConfigError(f"cannot read {path}: {e}") from e
     except yaml.YAMLError as e:
@@ -491,20 +512,22 @@ def load(path: str = None) -> dict:
     return config
 
 
-def save(config: dict, path: str = None) -> str:
+def save(config: dict, path: str = None, check: bool = True) -> str:
     """
     Validate and write the configuration. The previous file is kept as
     <path>.bak; the new one replaces it in one step (never a half-written file).
     Returns the path; ConfigError (nothing written) if the configuration is invalid.
+    check=False skips the validation: only for the file as loaded with a new
+    password, so that the editor of a file with problems can still be opened.
     """
     path = path or CONFIG_PATH
     config = normalize(config)
-    errors = validate(config)
+    errors = validate(config) if check else []
     if errors:
         raise ConfigError("configuration not saved:\n" + "\n".join(errors))
     text = dump(config)
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
@@ -551,7 +574,7 @@ def load_or_create(path: str = None, legacy_path: str = None,
 
 def _write_unchecked(config: dict, path: str):
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         with open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(dump(config))
     except OSError as e:
@@ -582,6 +605,11 @@ def describe_changes(old: dict, new: dict) -> list[str]:
             lines.append(f"{key}: added = {b[key]!r}")
         elif a[key] != b[key]:
             lines.append(f"{key}: {a[key]!r} -> {b[key]!r}")
+    # The order of the entries is the display order: a move alone is a change too.
+    for section in ("eurotherms", "shutters"):
+        before, after = list(_dict(old.get(section))), list(_dict(new.get(section)))
+        if [n for n in before if n in after] != [n for n in after if n in before]:
+            lines.append(f"{section}: order -> {', '.join(after)}")
     return lines
 
 

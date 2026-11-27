@@ -12,7 +12,6 @@ compiler (limits, critical zone, time estimate) and executed by the same sequenc
 as temperature_ramp (temperature_control.py).
 """
 import threading
-from datetime import datetime
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -23,7 +22,6 @@ from PyQt6.QtWidgets import (
 import ui_theme as ui
 from connection_monitor import LOST, panel_text
 from pressure_interlock import InterlockError
-from ramp_planning import plan_ramp_segments
 from temperature_control import (
     check_manual_ramp, manual_limits_text, start_temperature_ramp,
 )
@@ -77,7 +75,7 @@ class InstrumentPanel(QFrame):
         self._applying = False        # a temperature change is being written
         self._rate_prefilled = False
         self._ramp_stop = threading.Event()   # stops the segment follow-up of the manual ramp
-        self._follow_up_until = None  # end of a manual ramp that still has segments to write
+        self._follow_up = threading.Event()   # set while the segment follow-up thread is alive
         self._applied = None          # (text, color) shown after a change was applied
         self._log_line.connect(self.log)
         self._ramp_finished.connect(self._on_ramp_finished)
@@ -337,10 +335,11 @@ class InstrumentPanel(QFrame):
             self.lock_label.setText(f"🔒 {owner}")
             self.lock_label.setToolTip(f"Locked by {owner}")
             self.lock_label.show()
-            if self.follow_up_pending():
-                # The script now drives this loop: the manual ramp must not write
-                # its next segment over the script's own commands.
-                self.stop_follow_up()
+            # The script now drives this loop: the manual ramp must not write
+            # its next segment over the script's own commands.
+            pending = self.follow_up_pending()
+            self.stop_follow_up()
+            if pending:
                 self.log(f"[{self.name}] Manual ramp follow-up stopped: "
                          f"loop taken by script '{owner}'.")
         else:
@@ -353,23 +352,15 @@ class InstrumentPanel(QFrame):
 
     def follow_up_pending(self) -> bool:
         """
-        True while a manual ramp across the critical zone is in progress: its next
-        segments are written by a background thread of this program.
+        True while a manual ramp is being written, or is crossing the critical zone:
+        its next segments are written by a background thread of this program, which
+        lives until the last one is written (not until the estimated end).
         """
-        return self._follow_up_until is not None and datetime.now() < self._follow_up_until
+        return (self._applying or self._follow_up.is_set()) and not self._ramp_stop.is_set()
 
     def stop_follow_up(self):
         """Stop writing the next segments of the manual ramp (the hardware keeps its setpoint)."""
         self._ramp_stop.set()
-        self._follow_up_until = None
-
-    def _has_several_segments(self, check) -> bool:
-        zone = self.addresses.get(self.name, {}).get("critical_zone")
-        if check.direct or not zone:
-            return False
-        if self._last_pv is None or self._lost:
-            return True         # unknown start: assume the zone is crossed
-        return len(plan_ramp_segments(self._last_pv, check.target, check.script_rate, zone)) > 1
 
     def _on_input_edited(self, _text):
         self._applied = None
@@ -430,7 +421,7 @@ class InstrumentPanel(QFrame):
         # A new ramp replaces the previous manual one: stop its segment follow-up.
         self.stop_follow_up()
         self._ramp_stop = stop_event = threading.Event()
-        self._several_segments = self._has_several_segments(check)
+        self._follow_up = follow_up = threading.Event()
         self._applying = True
         self._applied = None
         self._refresh_set_temperature()
@@ -442,7 +433,8 @@ class InstrumentPanel(QFrame):
             try:
                 finish = start_temperature_ramp(
                     ctrl, name, check.target, check.script_rate,
-                    addresses=addresses, log=self._log_line.emit, stop_event=stop_event)
+                    addresses=addresses, log=self._log_line.emit, stop_event=stop_event,
+                    follow_up=follow_up, raise_direct_error=True)
             except Exception as e:
                 self._log_line.emit(f"[{name}] Set temperature failed: {e}")
                 self._ramp_finished.emit(None, f"Not applied: {e}")
@@ -458,7 +450,6 @@ class InstrumentPanel(QFrame):
 
     def _on_ramp_finished(self, finish, problem):
         self._applying = False
-        self._follow_up_until = finish if self._several_segments else None
         if problem:
             self._applied = (problem, ui.ERROR if problem.startswith("Not applied") else ui.WARN)
         else:

@@ -33,7 +33,8 @@ def loop_flag(addresses: dict, loop_id: str, key: str) -> bool:
 
 
 def start_temperature_ramp(ctrl, loop_id, target_temp, normal_rate_min, *,
-                           addresses, log, stop_event, max_rate_cap=None):
+                           addresses, log, stop_event, max_rate_cap=None, follow_up=None,
+                           raise_direct_error=False):
     """
     Start a temperature ramp and return at once (the hardware does the ramp).
 
@@ -42,11 +43,14 @@ def start_temperature_ramp(ctrl, loop_id, target_temp, normal_rate_min, *,
     reason is logged).
 
     - Loops with "script_direct_setpoint": the setpoint is written, nothing else.
+      A failed write is logged; with raise_direct_error it is also raised (the
+      General View must not show the change as applied).
     - Others: ramp generator verified OFF (skipped for "script_keep_ramp_generator"
       loops, whose state is restored at the end), AUTO mode, then the first
       segment is written. If the ramp crosses the critical zone, a daemon thread
       writes the next segments when the PV reaches each boundary; a failed PV
-      read never moves on. stop_event stops that thread.
+      read never moves on. stop_event stops that thread. `follow_up` (optional
+      threading.Event) is set while that thread is alive and cleared when it ends.
     """
     cap = machine_config.MAX_TEMP_RATE_CAP if max_rate_cap is None else max_rate_cap
     if normal_rate_min > cap:
@@ -63,6 +67,8 @@ def start_temperature_ramp(ctrl, loop_id, target_temp, normal_rate_min, *,
             log(f"[{loop_id}] New temperature setpoint = {target_temp}°C.")
         except Exception as e:
             log(f"[{loop_id}] Error setting temperature setpoint: {e}")
+            if raise_direct_error:
+                raise
         return None
 
     log(f"[{loop_id}] Planning temperature ramp to {target_temp}°C.")
@@ -180,8 +186,17 @@ def start_temperature_ramp(ctrl, loop_id, target_temp, normal_rate_min, *,
                     ctrl.write_value(loop_id, "temperature_setpoint", seg.target)
                     prev_target = seg.target
 
+            def _follow_up_thread(segs, prev_target):
+                try:
+                    _continue_segments(segs, prev_target)
+                finally:
+                    if follow_up is not None:
+                        follow_up.clear()
+
+            if follow_up is not None:
+                follow_up.set()
             threading.Thread(
-                target=_continue_segments,
+                target=_follow_up_thread,
                 args=(ramp_segments[1:], first_seg.target),
                 daemon=True,
             ).start()

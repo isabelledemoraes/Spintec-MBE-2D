@@ -186,6 +186,10 @@ class MainWindow(QMainWindow):
         self.confirm_log_btn.clicked.connect(self.set_log_mode)
 
         self.shutter_ctrl = ShutterController()
+        if daq_init_ok is True:
+            # initialize_daq_outputs() set every line LOW: the shutters are closed,
+            # whatever the state saved by the previous session says.
+            self.shutter_ctrl.mark_all_closed()
 
         log_layout = QHBoxLayout()
         log_layout.addWidget(QLabel("Log Mode:"))
@@ -581,6 +585,16 @@ class MainWindow(QMainWindow):
                 f"A manual ramp is crossing its critical zone ({', '.join(ramping)}): "
                 f"its next segment is not written yet.\nWait for its end, then restart.")
             return False
+        # At the next start every NI-DAQ line is set LOW: open shutters get closed.
+        open_shutters = [name for name, info in addresses.items()
+                         if isinstance(info, dict) and info.get("shutter_line")
+                         and self.shutter_ctrl.get_state(name)]
+        if open_shutters and QMessageBox.question(
+                self, "Restart",
+                f"Open shutter(s): {', '.join(open_shutters)}.\n"
+                f"The restart closes every shutter. Restart now?"
+        ) != QMessageBox.StandardButton.Yes:
+            return False
         self.append_log("[Config] Restart requested to apply the configuration.")
         self.restart_requested = True
         self.close()
@@ -706,7 +720,22 @@ def main() -> int:
     app = QApplication(sys.argv)
     _icon = QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mbe_icon.ico"))
     app.setWindowIcon(_icon)
-    window = MainWindow(daq_init_ok=daq_ok)
+    try:
+        window = MainWindow(daq_init_ok=daq_ok)
+    except Exception as e:
+        problems = machine_config.validate(machine_config.config)
+        if not problems:
+            raise
+        # A wrong value in machine.yaml (e.g. text where a number is expected) made
+        # the window impossible to build: same answer as an unreadable file, and
+        # exit code 0 so that the watchdog does not restart in a loop.
+        QMessageBox.critical(
+            None, "MBE Control — configuration error",
+            f"MBE Control cannot start with this machine configuration ({e!r}).\n\n"
+            f"Problems found in {machine_config.CONFIG_PATH}:\n\n• "
+            + "\n• ".join(problems[:15])
+            + "\n\nFix the file (or restore its .bak copy) and start again.")
+        return 0
     window.setWindowIcon(_icon)
     window.show()
     code = app.exec()

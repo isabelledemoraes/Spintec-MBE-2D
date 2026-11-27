@@ -130,5 +130,12 @@ class ShutterController:
         with self._lock:
             return bool(self.state.get(loop_id, False))
 
+    def mark_all_closed(self):
+        """Every line was just set LOW (initialize_daq_outputs): forget the saved open states."""
+        with self._lock:
+            if any(self.state.values()):
+                self.state = dict.fromkeys(self.state, False)
+                self._save_state()
+
     def get_last_saved(self, loop_id) -> bool:
         return self.get_state(loop_id)

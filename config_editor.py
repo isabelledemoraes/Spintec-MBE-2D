@@ -463,7 +463,9 @@ class ShutterPage(Page):
         form = self.card("Output")
         self.line = self.add(form, TextField("NI-DAQ line", shutter["line"],
                                              placeholder="e.g. Dev1/port0/line7"))
-        interlock = shutter["pressure_interlock"] or {}
+        interlock = shutter["pressure_interlock"]
+        if not isinstance(interlock, dict):
+            interlock = {}          # absent, or written wrongly in the file (limit to retype)
         form = self.card("Pressure interlock", "The shutter opens only while the gauge reads "
                                                "strictly below the limit (checked at each "
                                                "opening, from a script or from the button).")
@@ -774,9 +776,20 @@ class ConfigEditor(QWidget):
             notes.append("Simulation mode is switched OFF: after the restart the program "
                          "drives the REAL instruments.")
         for name, shutter in new["shutters"].items():
-            before = (old["shutters"].get(name) or {}).get("pressure_interlock")
+            # Previous interlock of this name, else of this NI-DAQ line (the interlock
+            # itself is matched by line): a rename must not hide the change.
+            before = (old["shutters"].get(name) or {}).get("pressure_interlock") or next(
+                (s.get("pressure_interlock") for s in old["shutters"].values()
+                 if s.get("line") == shutter["line"] and s.get("pressure_interlock")), None)
             now = shutter["pressure_interlock"]
-            if now and now.get("bypass") and not (before and before.get("bypass")):
+            if now and isinstance(before, dict):
+                old_limit, new_limit = before.get("max_pressure_mbar"), now.get("max_pressure_mbar")
+                if (mc._is_number(old_limit) and mc._is_number(new_limit)
+                        and new_limit > old_limit):
+                    notes.append(f"Pressure interlock limit of {name} is RAISED from "
+                                 f"{old_limit:g} to {new_limit:g} mbar.")
+            if now and now.get("bypass") and not (isinstance(before, dict)
+                                                  and before.get("bypass")):
                 notes.append(f"Pressure interlock of {name} is BYPASSED: it will open without "
                              f"any pressure check.")
             if before and not now:
@@ -864,7 +877,7 @@ class ConfigEditor(QWidget):
             if not mc.check_password(on_disk, current):
                 raise mc.ConfigError("the current password is wrong")
             mc.set_password(on_disk, new)
-            mc.save(on_disk, self.path)
+            mc.save(on_disk, self.path, check=False)     # file as it is, plus the password
         except mc.ConfigError as e:
             self._warn("Password not changed", str(e))
             return False
@@ -1043,7 +1056,9 @@ class ConfigTab(QWidget):
             return False
         try:
             mc.set_password(config, password)
-            mc.save(config, self.path)
+            # The file as it is, plus the password: not validated, so that a file
+            # with problems (converted addresses.py) can be opened and fixed here.
+            mc.save(config, self.path, check=False)
         except mc.ConfigError as e:
             self.lock_error.setText(str(e))
             return False
