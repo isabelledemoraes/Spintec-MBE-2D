@@ -4,7 +4,7 @@
 
 | Requirement | Minimum | Where to get it |
 |---|---|---|
-| Python | 3.8 or newer | https://www.python.org/downloads/ |
+| Python | 3.11 or newer (64-bit) | https://www.python.org/downloads/ |
 | Windows | 10 or 11 | — |
 | NI-DAQmx driver | Latest | https://www.ni.com/en/support/downloads/drivers/download.ni-daqmx.html |
 
@@ -15,14 +15,40 @@
 
 ## Quick Install (5 minutes)
 
-1. Copy the project folder to the instrument computer (USB drive or network share).
-2. Double-click **`install_windows.bat`**.
-3. Follow the on-screen prompts — it will:
-   - Create an isolated Python environment
-   - Install all required packages automatically
-   - Warn you about any missing drivers
-4. Edit **`addresses.py`** with your instrument COM ports (see below).
-5. Double-click **`run.bat`** to launch.
+1. Copy the project folder to the instrument computer (USB drive, network
+   share or `git clone`). Do **not** copy a `venv` folder from another PC:
+   the installer creates a fresh one.
+2. Double-click **`install_windows.bat`**. It will:
+   - check Python (3.11+), create the isolated environment `venv` in the project folder
+   - install the exact tested versions from `requirements-lock.txt` (else `requirements.txt`) into it (nothing is installed globally)
+   - check the NI-DAQmx driver, copy the `addresses.py` template if missing,
+     run an import check and offer to create the desktop shortcut
+3. Edit **`addresses.py`** for this machine (see the checklist below).
+4. Double-click **`run.bat`** (or the desktop shortcut) to launch.
+
+To update the tested versions later, on the tested PC run `python -m pip freeze > requirements-lock.txt` and commit it.
+
+### No internet on the instrument PC?
+
+1. On a PC **with** internet and the **same Python version** (64-bit) as the
+   instrument PC, double-click **`make_offline_wheels.bat`**. It fills a `wheels` folder.
+2. Copy the whole project folder, including `wheels`, to the instrument PC.
+3. Run `install_windows.bat` there: when `wheels` exists, it installs from it only.
+
+### Before the first real run: checklist for `addresses.py`
+
+`addresses.py` is machine-specific and not in Git: never copy the one from a
+test laptop. The installer copies `config/addresses.py.example` if it is missing.
+
+- [ ] `SIMULATION = False` (True = fake instruments)
+- [ ] COM ports, Modbus slave ids and NI device name (Dev1...) of this machine
+- [ ] `MACHINE_NAME` and `SCRIPT_ARCHIVE_DIR`: **Run is blocked until both are set**
+- [ ] `max_temp` (and `min_temp`) of every loop: scripts using a loop without them do not compile
+- [ ] Pressure gauge set to mbar, `"unit": "mbar"` and the `pressure_interlock` entry on Liquid_N2
+- [ ] NI-DAQmx driver installed (the installer warns if not)
+
+Then start in `SIMULATION = True` once if you want to check the install without
+touching the instruments, and switch to `False` afterwards.
 
 ---
 
@@ -123,7 +149,9 @@ simulated (no real movement).
 | Error | Cause | Fix |
 |---|---|---|
 | `Python not found` | Python not on PATH | Reinstall Python, tick "Add to PATH" |
-| `No module named PyQt6` | Packages not installed | Run `install_windows.bat` again |
+| `No module named PyQt6` | Packages not installed or wrong Python | Run `install_windows.bat`, then start with `run.bat` (it uses `venv`) |
+| `No module named addresses` | `addresses.py` missing | Copy `config/addresses.py.example` to `addresses.py` |
+| Run button does nothing / blocked | `MACHINE_NAME` / `SCRIPT_ARCHIVE_DIR` not set | Set both in `addresses.py` |
 | `FileNotFoundError: COM1` | Wrong COM port | Check Device Manager, update `addresses.py` |
 | `minimalmodbus.NoResponseError` | Eurotherm not responding | Check RS-485 cable, Modbus slave address |
 | `Serial timeout on COM10` | Pressure gauge off or wrong port | Check gauge power, update `addresses.py` |
@@ -140,7 +168,11 @@ MBE2026/
 ├── watchdog.py                Auto-restart launcher (use this to run)
 ├── visu_window.py             Live dashboard (launched by "📊 Dashboard" button)
 ├── run.bat                    Windows launcher (double-click)
-├── install_windows.bat        One-click installer
+├── install_windows.bat        One-click installer (creates venv\)
+├── make_offline_wheels.bat    Optional: packages for a PC without internet
+├── create_shortcut.ps1        Desktop shortcut with the MBE icon
+├── mbe_icon.ico               Application icon
+├── venv/                      Python environment (created by the installer, not in Git)
 ├── requirements.txt           Python package list
 ├── addresses.py               YOUR instrument configuration (not in Git)
 ├── config/
@@ -156,5 +188,5 @@ MBE2026/
 If you receive an updated version of the project:
 
 1. Replace the project folder contents (or `git pull` if using Git)
-2. Run `install_windows.bat` again — it will update packages if needed
+2. Run `install_windows.bat` again: it reuses `venv` and updates packages if needed
 3. Your `addresses.py` is preserved (it is never overwritten)

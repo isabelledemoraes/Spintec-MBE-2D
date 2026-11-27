@@ -234,6 +234,14 @@ QThread → EurothermWorker.run() → data_ready signal
   error ✅. Open: Compile does not warn about lost instruments; other script functions on a lost
   instrument unchanged (`wait_until_temperature` returns on a read error and the script continues,
   `power_ramp` logs and continues)
+- Script Help (issue #1): "❓ Help" button in each editor opens a non-modal `ScriptHelpDialog`
+  (`script_help.py`): `HELP_ENTRIES` = syntax + description per DSL function, Copy / Copy all
+  buttons. New tabs start empty (scripts stay clean). `check_not_empty` gives a Compile WARNING for
+  a script with no command ✅ — Qt tests (`tests/test_script_help.py`) not run in the cloud (no libEGL)
+- Instrument-PC install: `install_windows.bat` (Python 3.11+, creates `venv`, installs `requirements-lock.txt` (exact tested versions, else `requirements.txt`), NI-DAQmx
+  check, copies the `addresses.py` template, import check, optional shortcut), `run.bat` (uses `venv`),
+  `make_offline_wheels.bat` + `wheels/` for a PC without internet; checklist in `README_INSTALL.md`.
+  `.bat` files are CRLF (`.gitattributes`). Not yet run on a real Windows instrument PC
 - Pressure gauge: simulated OK; real COM10 not yet tested end-to-end
 - `gui_main.py` uses a relative import `.GUIv5` — will fail if run directly; use `watchdog.py`
 
